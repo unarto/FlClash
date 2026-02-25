@@ -31,7 +31,7 @@ class Tray {
   }
 
   String getTryIcon({required bool isStart, required bool tunEnable}) {
-    if (system.isMacOS || !isStart) {
+    if (!isStart) {
       return 'assets/images/icon/status_1.$trayIconSuffix';
     }
     if (!tunEnable) {
