@@ -19,6 +19,7 @@ class Tray {
   bool _pendingReopenOnClose = false;
   int _keepMenuOpenSessionId = 0;
   final Set<String> _delayTriggeredGroups = {};
+  final Set<String> _testingProxyMenuKeys = {};
   final Map<String, int> _proxyMenuItemIdMap = {};
   final Map<String, int> _groupDelayActionItemIdMap = {};
 
@@ -121,6 +122,7 @@ class Tray {
       for (final group in trayState.groups) {
         List<MenuItem> subMenuItems = [];
         final testUrl = group.testUrl;
+        final selectedProxyName = appController.getSelectedProxyName(group.name);
         final hasDelayResult =
             _hasDelayResultForGroup(group) ||
             _delayTriggeredGroups.contains(group.name);
@@ -136,11 +138,19 @@ class Tray {
         subMenuItems.add(delayActionItem);
         _groupDelayActionItemIdMap[group.name] = delayActionItem.id;
         subMenuItems.add(MenuItem.separator());
-        for (final proxy in group.all) {
+        final orderedProxies = _sortProxiesForTray(
+          proxies: group.all,
+          selectedProxyName: selectedProxyName,
+        );
+        for (final proxy in orderedProxies) {
           final proxyItem = MenuItem.checkbox(
             // 在 macOS 托盘菜单中直观展示当前测速结果。
-            label: _buildProxyMenuLabel(proxy, testUrl: testUrl),
-            checked: appController.getSelectedProxyName(group.name) == proxy.name,
+            label: _buildProxyMenuLabel(
+              proxy,
+              groupName: group.name,
+              testUrl: testUrl,
+            ),
+            checked: selectedProxyName == proxy.name,
             onClick: (_) {
               appController.updateCurrentSelectedMap(group.name, proxy.name);
               appController.changeProxy(
@@ -258,6 +268,13 @@ class Tray {
       _delayTriggeredGroups.add(group.name);
       unawaited(_updateDelayActionLabel(group));
       for (final proxy in group.all) {
+        _testingProxyMenuKeys.add(
+          _buildProxyKey(
+            groupName: group.name,
+            proxyName: proxy.name,
+            testUrl: group.testUrl,
+          ),
+        );
         unawaited(
           _updateProxyMenuLabel(
             groupName: group.name,
@@ -278,6 +295,13 @@ class Tray {
               if (group.testUrl != testUrl) {
                 continue;
               }
+              _testingProxyMenuKeys.remove(
+                _buildProxyKey(
+                  groupName: group.name,
+                  proxyName: proxyName,
+                  testUrl: group.testUrl,
+                ),
+              );
               unawaited(
                 _updateProxyMenuLabel(
                   groupName: group.name,
@@ -292,6 +316,24 @@ class Tray {
         if (_keepMenuOpenSessionId == sessionId) {
           _keepMenuOpen = false;
           _pendingReopenOnClose = false;
+        }
+        for (final group in groups) {
+          for (final proxy in group.all) {
+            _testingProxyMenuKeys.remove(
+              _buildProxyKey(
+                groupName: group.name,
+                proxyName: proxy.name,
+                testUrl: group.testUrl,
+              ),
+            );
+            unawaited(
+              _updateProxyMenuLabel(
+                groupName: group.name,
+                proxyName: proxy.name,
+                testUrl: group.testUrl,
+              ),
+            );
+          }
         }
       }
     }());
@@ -319,6 +361,26 @@ class Tray {
   void _cancelKeepMenuOpen() {
     _keepMenuOpen = false;
     _pendingReopenOnClose = false;
+  }
+
+  List<Proxy> _sortProxiesForTray({
+    required List<Proxy> proxies,
+    required String? selectedProxyName,
+  }) {
+    if (selectedProxyName == null || selectedProxyName.isEmpty) {
+      return proxies;
+    }
+    final sortedProxies = List<Proxy>.from(proxies);
+    sortedProxies.sort((a, b) {
+      if (a.name == selectedProxyName && b.name != selectedProxyName) {
+        return -1;
+      }
+      if (b.name == selectedProxyName && a.name != selectedProxyName) {
+        return 1;
+      }
+      return 0;
+    });
+    return sortedProxies;
   }
 
   String _buildProxyKey({
@@ -359,15 +421,42 @@ class Tray {
     }
     await trayManager.updateMenuItemLabel(
       id: itemId,
-      label: _buildProxyMenuLabelByName(proxyName, testUrl: testUrl),
+      label: _buildProxyMenuLabelByName(
+        proxyName,
+        testUrl: testUrl,
+        testingKey: _buildProxyKey(
+          groupName: groupName,
+          proxyName: proxyName,
+          testUrl: testUrl,
+        ),
+      ),
     );
   }
 
-  String _buildProxyMenuLabel(Proxy proxy, {String? testUrl}) {
-    return _buildProxyMenuLabelByName(proxy.name, testUrl: testUrl);
+  String _buildProxyMenuLabel(
+    Proxy proxy, {
+    required String groupName,
+    String? testUrl,
+  }) {
+    return _buildProxyMenuLabelByName(
+      proxy.name,
+      testUrl: testUrl,
+      testingKey: _buildProxyKey(
+        groupName: groupName,
+        proxyName: proxy.name,
+        testUrl: testUrl,
+      ),
+    );
   }
 
-  String _buildProxyMenuLabelByName(String proxyName, {String? testUrl}) {
+  String _buildProxyMenuLabelByName(
+    String proxyName, {
+    String? testUrl,
+    String? testingKey,
+  }) {
+    if (testingKey != null && _testingProxyMenuKeys.contains(testingKey)) {
+      return '$proxyName (...)';
+    }
     final delay = appController.getDelayForProxy(proxyName, testUrl: testUrl);
     if (delay == null) {
       return proxyName;

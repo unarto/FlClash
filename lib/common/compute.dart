@@ -39,16 +39,39 @@ List<Group> computeSort({
     return List.of(proxies)..sort((a, b) => a.name.compareTo(b.name));
   }
 
+  List<Proxy> moveSelectedProxyToFirst({
+    required List<Proxy> proxies,
+    required String? selectedProxyName,
+  }) {
+    if (selectedProxyName == null || selectedProxyName.isEmpty) {
+      return proxies;
+    }
+    return List<Proxy>.from(proxies)..sort((a, b) {
+      if (a.name == selectedProxyName && b.name != selectedProxyName) {
+        return -1;
+      }
+      if (b.name == selectedProxyName && a.name != selectedProxyName) {
+        return 1;
+      }
+      return 0;
+    });
+  }
+
   return groups.map((group) {
     final proxies = group.all;
     final newProxies = switch (sortType) {
       ProxiesSortType.none => proxies,
-      ProxiesSortType.delay => sortOfDelay(
-        groups: groups,
-        proxies: proxies,
-        delayMap: delayMap,
-        selectedMap: selectedMap,
-        testUrl: group.testUrl.takeFirstValid([defaultTestUrl]),
+      ProxiesSortType.delay => moveSelectedProxyToFirst(
+        proxies: sortOfDelay(
+          groups: groups,
+          proxies: proxies,
+          delayMap: delayMap,
+          selectedMap: selectedMap,
+          testUrl: group.testUrl.takeFirstValid([defaultTestUrl]),
+        ),
+        selectedProxyName: group.getCurrentSelectedName(
+          selectedMap[group.name] ?? '',
+        ),
       ),
       ProxiesSortType.name => sortOfName(proxies),
     };
