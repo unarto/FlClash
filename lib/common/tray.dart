@@ -253,7 +253,7 @@ class Tray {
   void _startDelayTestAndKeepMenuOpen(List<Group> groups) {
     final sessionId = ++_keepMenuOpenSessionId;
     _keepMenuOpen = true;
-    _pendingReopenOnClose = true;
+    _pendingReopenOnClose = false;
     for (final group in groups) {
       _delayTriggeredGroups.add(group.name);
       unawaited(_updateDelayActionLabel(group));
@@ -298,7 +298,11 @@ class Tray {
   }
 
   void handleMenuDidClose() {
-    if (!system.isMacOS || !_keepMenuOpen || !_pendingReopenOnClose) {
+    if (!system.isMacOS || !_keepMenuOpen) {
+      return;
+    }
+    if (!_pendingReopenOnClose) {
+      _cancelKeepMenuOpen();
       return;
     }
     _pendingReopenOnClose = false;
@@ -310,6 +314,11 @@ class Tray {
       return;
     }
     unawaited(trayManager.popUpContextMenu());
+  }
+
+  void _cancelKeepMenuOpen() {
+    _keepMenuOpen = false;
+    _pendingReopenOnClose = false;
   }
 
   String _buildProxyKey({
