@@ -278,6 +278,7 @@ class MessageLookup extends MessageLookupByLibrary {
     "delay": MessageLookupByLibrary.simpleMessage("Задержка"),
     "delaySort": MessageLookupByLibrary.simpleMessage("Сортировка по задержке"),
     "delayTest": MessageLookupByLibrary.simpleMessage("Тест задержки"),
+    "retest": MessageLookupByLibrary.simpleMessage("Повторный тест"),
     "delete": MessageLookupByLibrary.simpleMessage("Удалить"),
     "deleteMultipTip": m1,
     "deleteTip": m2,

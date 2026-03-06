@@ -492,6 +492,55 @@ extension ProxiesControllerExt on AppController {
     _ref.read(delayDataSourceProvider.notifier).setDelay(delay);
   }
 
+  int? getDelayForProxy(String proxyName, {String? testUrl}) {
+    return _ref.read(getDelayProvider(proxyName: proxyName, testUrl: testUrl));
+  }
+
+  Future<void> delayTestForTrayGroups(
+    List<Group> groups, {
+    bool refreshTrayOnProgress = false,
+    bool refreshTrayOnDone = true,
+    void Function(String proxyName, String testUrl)? onDelayUpdated,
+  }) async {
+    final proxyNames = groups
+        .expand((group) => group.all.map((proxy) => proxy.name))
+        .toSet()
+        .toList();
+
+    final delayTasks = proxyNames.map<Future<void>>((proxyName) async {
+      // 复用现有真实节点解析逻辑，确保分组节点也能拿到正确的测速对象。
+      final selectedMap = _ref.read(
+        currentProfileProvider.select((state) => state?.selectedMap ?? {}),
+      );
+      final state = computeRealSelectedProxyState(
+        proxyName,
+        groups: _ref.read(groupsProvider),
+        selectedMap: selectedMap,
+      );
+      final url = state.testUrl.takeFirstValid([
+        _ref.read(appSettingProvider.select((state) => state.testUrl)),
+      ]);
+      final name = state.proxyName;
+      if (name.isEmpty) {
+        return;
+      }
+      setDelay(Delay(url: url, name: name, value: 0));
+      onDelayUpdated?.call(name, url);
+      setDelay(await coreController.getDelay(url, name));
+      onDelayUpdated?.call(name, url);
+    }).toList();
+
+    for (final batchTasks in delayTasks.batch(100)) {
+      await Future.wait(batchTasks);
+      if (refreshTrayOnProgress) {
+        await updateTray();
+      }
+    }
+    if (refreshTrayOnDone) {
+      await updateTray();
+    }
+  }
+
   Future<void> changeProxy({
     required String groupName,
     required String proxyName,
