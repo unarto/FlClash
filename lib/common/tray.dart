@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:fl_clash/controller.dart';
@@ -14,6 +15,12 @@ import 'window.dart';
 
 class Tray {
   static Tray? _instance;
+  bool _keepMenuOpen = false;
+  bool _pendingReopenOnClose = false;
+  int _keepMenuOpenSessionId = 0;
+  final Set<String> _delayTriggeredGroups = {};
+  final Map<String, int> _proxyMenuItemIdMap = {};
+  final Map<String, int> _groupDelayActionItemIdMap = {};
 
   Tray._internal();
 
@@ -69,6 +76,8 @@ class Tray {
         tunEnable: trayState.tunEnable,
       );
     }
+    _proxyMenuItemIdMap.clear();
+    _groupDelayActionItemIdMap.clear();
     List<MenuItem> menuItems = [];
     final showMenuItem = MenuItem(
       label: appLocalizations.show,
@@ -111,21 +120,41 @@ class Tray {
     if (system.isMacOS) {
       for (final group in trayState.groups) {
         List<MenuItem> subMenuItems = [];
+        final testUrl = group.testUrl;
+        final hasDelayResult =
+            _hasDelayResultForGroup(group) ||
+            _delayTriggeredGroups.contains(group.name);
+        final delayActionItem = MenuItem(
+          key: 'keep-open:delay-test:${group.name}',
+          label: _buildDelayTestActionLabel(
+            hasDelayResult: hasDelayResult,
+          ),
+          onClick: (_) {
+            _startDelayTestAndKeepMenuOpen([group]);
+          },
+        );
+        subMenuItems.add(delayActionItem);
+        _groupDelayActionItemIdMap[group.name] = delayActionItem.id;
+        subMenuItems.add(MenuItem.separator());
         for (final proxy in group.all) {
-          subMenuItems.add(
-            MenuItem.checkbox(
-              label: proxy.name,
-              checked:
-                  appController.getSelectedProxyName(group.name) == proxy.name,
-              onClick: (_) {
-                appController.updateCurrentSelectedMap(group.name, proxy.name);
-                appController.changeProxy(
-                  groupName: group.name,
-                  proxyName: proxy.name,
-                );
-              },
-            ),
+          final proxyItem = MenuItem.checkbox(
+            // 在 macOS 托盘菜单中直观展示当前测速结果。
+            label: _buildProxyMenuLabel(proxy, testUrl: testUrl),
+            checked: appController.getSelectedProxyName(group.name) == proxy.name,
+            onClick: (_) {
+              appController.updateCurrentSelectedMap(group.name, proxy.name);
+              appController.changeProxy(
+                groupName: group.name,
+                proxyName: proxy.name,
+              );
+            },
           );
+          subMenuItems.add(proxyItem);
+          _proxyMenuItemIdMap[_buildProxyKey(
+            groupName: group.name,
+            proxyName: proxy.name,
+            testUrl: testUrl,
+          )] = proxyItem.id;
         }
         menuItems.add(
           MenuItem.submenu(
@@ -191,6 +220,10 @@ class Tray {
       );
     }
     updateTrayTitle(showTrayTitle: trayState.showTrayTitle, traffic: traffic);
+    if (_keepMenuOpen) {
+      // 菜单刷新会导致系统收起，这里登记一次“下次关闭后重开”。
+      _pendingReopenOnClose = true;
+    }
   }
 
   Future<void> updateTrayTitle({
@@ -215,6 +248,149 @@ class Tray {
         : 'export all_proxy=$url';
 
     await Clipboard.setData(ClipboardData(text: cmdline));
+  }
+
+  void _startDelayTestAndKeepMenuOpen(List<Group> groups) {
+    final sessionId = ++_keepMenuOpenSessionId;
+    _keepMenuOpen = true;
+    _pendingReopenOnClose = true;
+    for (final group in groups) {
+      _delayTriggeredGroups.add(group.name);
+      unawaited(_updateDelayActionLabel(group));
+      for (final proxy in group.all) {
+        unawaited(
+          _updateProxyMenuLabel(
+            groupName: group.name,
+            proxyName: proxy.name,
+            testUrl: group.testUrl,
+          ),
+        );
+      }
+    }
+    unawaited(() async {
+      try {
+        await appController.delayTestForTrayGroups(
+          groups,
+          refreshTrayOnProgress: false,
+          refreshTrayOnDone: false,
+          onDelayUpdated: (proxyName, testUrl) {
+            for (final group in groups) {
+              if (group.testUrl != testUrl) {
+                continue;
+              }
+              unawaited(
+                _updateProxyMenuLabel(
+                  groupName: group.name,
+                  proxyName: proxyName,
+                  testUrl: group.testUrl,
+                ),
+              );
+            }
+          },
+        );
+      } finally {
+        if (_keepMenuOpenSessionId == sessionId) {
+          _keepMenuOpen = false;
+          _pendingReopenOnClose = false;
+        }
+      }
+    }());
+  }
+
+  void handleMenuDidClose() {
+    if (!system.isMacOS || !_keepMenuOpen || !_pendingReopenOnClose) {
+      return;
+    }
+    _pendingReopenOnClose = false;
+    _reopenMenuIfSessionValid(_keepMenuOpenSessionId);
+  }
+
+  void _reopenMenuIfSessionValid(int sessionId) {
+    if (!system.isMacOS || !_keepMenuOpen || _keepMenuOpenSessionId != sessionId) {
+      return;
+    }
+    unawaited(trayManager.popUpContextMenu());
+  }
+
+  String _buildProxyKey({
+    required String groupName,
+    required String proxyName,
+    required String? testUrl,
+  }) {
+    return '$groupName|$proxyName|${testUrl ?? ''}';
+  }
+
+  Future<void> _updateDelayActionLabel(Group group) async {
+    final itemId = _groupDelayActionItemIdMap[group.name];
+    if (itemId == null) {
+      return;
+    }
+    await trayManager.updateMenuItemLabel(
+      id: itemId,
+      label: _buildDelayTestActionLabel(
+        hasDelayResult:
+            _hasDelayResultForGroup(group) ||
+            _delayTriggeredGroups.contains(group.name),
+      ),
+    );
+  }
+
+  Future<void> _updateProxyMenuLabel({
+    required String groupName,
+    required String proxyName,
+    required String? testUrl,
+  }) async {
+    final itemId = _proxyMenuItemIdMap[_buildProxyKey(
+      groupName: groupName,
+      proxyName: proxyName,
+      testUrl: testUrl,
+    )];
+    if (itemId == null) {
+      return;
+    }
+    await trayManager.updateMenuItemLabel(
+      id: itemId,
+      label: _buildProxyMenuLabelByName(proxyName, testUrl: testUrl),
+    );
+  }
+
+  String _buildProxyMenuLabel(Proxy proxy, {String? testUrl}) {
+    return _buildProxyMenuLabelByName(proxy.name, testUrl: testUrl);
+  }
+
+  String _buildProxyMenuLabelByName(String proxyName, {String? testUrl}) {
+    final delay = appController.getDelayForProxy(proxyName, testUrl: testUrl);
+    if (delay == null) {
+      return proxyName;
+    }
+    final delayText = switch (delay) {
+      0 => '...',
+      > 0 => '$delay ms',
+      _ => 'Timeout',
+    };
+    return '$proxyName ($delayText)';
+  }
+
+  bool _hasDelayResultForGroup(Group group) {
+    for (final proxy in group.all) {
+      final delay = appController.getDelayForProxy(
+        proxy.name,
+        testUrl: group.testUrl,
+      );
+      if (delay != null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  String _buildDelayTestActionLabel({
+    required bool hasDelayResult,
+  }) {
+    if (hasDelayResult) {
+      return appLocalizations.retest;
+    }
+    return appLocalizations.delayTest;
   }
 }
 

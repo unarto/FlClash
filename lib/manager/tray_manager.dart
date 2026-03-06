@@ -54,6 +54,12 @@ class _TrayContainerState extends ConsumerState<TrayManager> with TrayListener {
   }
 
   @override
+  void onTrayMenuDidClose() {
+    tray?.handleMenuDidClose();
+    super.onTrayMenuDidClose();
+  }
+
+  @override
   onTrayIconMouseDown() {
     window?.show();
   }

@@ -3748,6 +3748,11 @@ class AppLocalizations {
   String get delayTest {
     return Intl.message('Delay Test', name: 'delayTest', desc: '', args: []);
   }
+
+  /// `Retest`
+  String get retest {
+    return Intl.message('Retest', name: 'retest', desc: '', args: []);
+  }
 }
 
 class AppLocalizationDelegate extends LocalizationsDelegate<AppLocalizations> {
