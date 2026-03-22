@@ -75,7 +75,7 @@ class _OnboardingViewState extends ConsumerState<OnboardingView> {
                 children: [
                   const Spacer(),
                   const Text(
-                    'Добро пожаловать в FlClashRP',
+                    'Добро пожаловать в FlClashR',
                     style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700),
                     textAlign: TextAlign.center,
                   ),
