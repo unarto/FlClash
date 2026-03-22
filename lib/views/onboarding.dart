@@ -22,6 +22,11 @@ class _OnboardingViewState extends ConsumerState<OnboardingView> {
   }
 
   Future<void> _nextPage() async {
+    if (!mounted || !_pageController.hasClients) return;
+
+    final currentPage = _pageController.page?.round() ?? _pageController.initialPage;
+    if (currentPage >= 2) return;
+
     await _pageController.nextPage(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeInOut,
@@ -29,14 +34,12 @@ class _OnboardingViewState extends ConsumerState<OnboardingView> {
   }
 
   Future<void> _handlePasteLink() async {
-    // В проекте используется singleton `appController`, а не Provider<AppController> в дереве.
-    final controller = appController;
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final url = data?.text?.trim();
     if (url != null && url.startsWith('http')) {
-      await controller.addProfileFormURL(url);
+      await appController.addProfileFormURL(url);
+      if (!mounted) return;
     }
-    if (!mounted) return;
     await _nextPage();
   }
 
@@ -59,6 +62,13 @@ class _OnboardingViewState extends ConsumerState<OnboardingView> {
         child: Text(text),
       ),
     );
+  }
+
+  void _completeOnboarding() {
+    ref
+        .read(appSettingProvider.notifier)
+        .update((state) => state.copyWith(disclaimerAccepted: true));
+    Navigator.of(context).pop();
   }
 
   @override
@@ -157,12 +167,7 @@ class _OnboardingViewState extends ConsumerState<OnboardingView> {
                   const Spacer(),
                   _buildPrimaryButton(
                     text: 'Начать',
-                    onPressed: () {
-                      ref
-                          .read(appSettingProvider.notifier)
-                          .update((state) => state.copyWith(disclaimerAccepted: true));
-                      Navigator.of(context).pop();
-                    },
+                    onPressed: _completeOnboarding,
                   ),
                 ],
               ),

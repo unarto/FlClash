@@ -41,6 +41,7 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
 
   bool _isChecking = false;
   String? _ipInfoText;
+  String? _ipInfoError;
 
   Future<void> _runChecks() async {
     if (_isChecking) return;
@@ -48,6 +49,7 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
     setState(() {
       _isChecking = true;
       _ipInfoText = null;
+      _ipInfoError = null;
       for (final service in _services) {
         _statuses[service.key] = _CheckStatus.checking;
       }
@@ -66,13 +68,13 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
       _isChecking = false;
     });
 
-    final ipInfo = await _fetchIpInfo();
+    final ipInfoResult = await _fetchIpInfo();
     if (!mounted) return;
-    if (ipInfo != null) {
-      setState(() {
-        _ipInfoText = ipInfo;
-      });
-    }
+
+    setState(() {
+      _ipInfoText = ipInfoResult.text;
+      _ipInfoError = ipInfoResult.error;
+    });
   }
 
   Future<bool> _checkService(String url) async {
@@ -91,7 +93,7 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
     }
   }
 
-  Future<String?> _fetchIpInfo() async {
+  Future<_IpInfoResult> _fetchIpInfo() async {
     final client = HttpClient();
     try {
       final request = await client
@@ -99,23 +101,31 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
           .timeout(const Duration(seconds: 5));
       final response = await request.close().timeout(const Duration(seconds: 5));
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        return null;
+        return const _IpInfoResult(error: 'Не удалось получить IP-данные. Попробуйте позже.');
       }
       final body = await utf8.decodeStream(response).timeout(
             const Duration(seconds: 5),
           );
       final data = jsonDecode(body);
       if (data is! Map<String, dynamic>) {
-        return null;
+        return const _IpInfoResult(error: 'Сервис IP-данных вернул неожиданный ответ.');
       }
       final ip = data['ip']?.toString();
       final country = data['country']?.toString();
-      if (ip == null || ip.isEmpty) return null;
-      return country != null && country.isNotEmpty
-          ? 'Ваш IP: $ip ($country)'
-          : 'Ваш IP: $ip';
+      if (ip == null || ip.isEmpty) {
+        return const _IpInfoResult(error: 'IP-адрес не найден в ответе сервиса.');
+      }
+      return _IpInfoResult(
+        text: country != null && country.isNotEmpty ? 'Ваш IP: $ip ($country)' : 'Ваш IP: $ip',
+      );
+    } on SocketException {
+      return const _IpInfoResult(error: 'Не удалось подключиться к ipinfo.io.');
+    } on HttpException {
+      return const _IpInfoResult(error: 'Сервис IP-данных временно недоступен.');
+    } on FormatException {
+      return const _IpInfoResult(error: 'Не удалось разобрать ответ сервиса IP-данных.');
     } catch (_) {
-      return null;
+      return const _IpInfoResult(error: 'Ошибка при получении информации об IP.');
     } finally {
       client.close(force: true);
     }
@@ -147,7 +157,7 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
       case _CheckStatus.checking:
         return 'Проверяем...';
       case _CheckStatus.idle:
-        return 'Проверяем...';
+        return 'Нажмите «Проверить»';
     }
   }
 
@@ -213,6 +223,14 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
               child: Text(_ipInfoText!),
             ),
+          if (_ipInfoError != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: Text(
+                _ipInfoError!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
           if (advice != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
@@ -225,4 +243,11 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
       ),
     );
   }
+}
+
+class _IpInfoResult {
+  final String? text;
+  final String? error;
+
+  const _IpInfoResult({this.text, this.error});
 }
