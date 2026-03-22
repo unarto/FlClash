@@ -10,6 +10,7 @@ import 'package:fl_clash/manager/manager.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
+import 'package:fl_clash/views/views.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -57,6 +58,17 @@ class ApplicationState extends ConsumerState<Application> {
       _autoUpdateProfilesTask();
       appController.initLink();
       app?.initShortcuts();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final appSetting = ref.read(appSettingProvider);
+        if (!appSetting.disclaimerAccepted) {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              fullscreenDialog: true,
+              builder: (_) => const OnboardingView(),
+            ),
+          );
+        }
+      });
     });
   }
 
@@ -136,7 +148,7 @@ class ApplicationState extends ConsumerState<Application> {
           },
           scrollBehavior: BaseScrollBehavior(),
           title: appName,
-          locale: utils.getLocaleForString(locale),
+          locale: utils.getLocaleForString(locale) ?? const Locale('ru'),
           supportedLocales: AppLocalizations.delegate.supportedLocales,
           themeMode: themeProps.themeMode,
           theme: ThemeData(

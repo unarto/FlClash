@@ -16,7 +16,7 @@ class Navigation {
         icon: Icon(Icons.space_dashboard),
         label: PageLabel.dashboard,
         builder: (_) =>
-            const DashboardView(key: GlobalObjectKey(PageLabel.dashboard)),
+            const SimpleHomeView(key: GlobalObjectKey(PageLabel.dashboard)),
       ),
       NavigationItem(
         icon: const Icon(Icons.article),
