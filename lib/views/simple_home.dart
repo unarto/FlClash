@@ -18,10 +18,9 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
   static const _accentColor = Color(0xFFFF6D00);
 
   Future<void> _showImportDialog() async {
-    final ctx = context;
     final controller = TextEditingController();
     final shouldImport = await showDialog<bool>(
-      context: ctx,
+      context: context,
       builder: (context) {
         return AlertDialog(
           title: const Text('Импорт ключа'),
@@ -50,7 +49,6 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
     final url = controller.text.trim();
     controller.dispose();
     if (shouldImport != true || url.isEmpty) return;
-    if (!ctx.mounted) return;
     await appController.addProfileFormURL(url);
   }
 
@@ -222,8 +220,6 @@ class _HomeCard extends StatelessWidget {
                   const Spacer(),
                   Text(
                     title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w800,
@@ -233,8 +229,6 @@ class _HomeCard extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text(
                     subtitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 13,
                       color: Colors.white.withValues(alpha: 0.86),

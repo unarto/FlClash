@@ -19,42 +19,31 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install Flutter 3.32.0
-        run: |
-          cd $HOME
-          wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.32.0-stable.tar.xz
-          tar xf flutter_linux_3.32.0-stable.tar.xz
-          echo "$HOME/flutter/bin" >> $GITHUB_PATH
-          export PATH="$HOME/flutter/bin:$PATH"
-          flutter --version
-          dart --version
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.2'
+          channel: 'stable'
+          cache: false
+
+      - name: Check Dart version
+        run: dart --version
 
       - name: Disable analytics
-        run: |
-          export PATH="$HOME/flutter/bin:$PATH"
-          flutter config --no-analytics
+        run: flutter config --no-analytics
 
       - name: Get dependencies
-        run: |
-          export PATH="$HOME/flutter/bin:$PATH"
-          flutter pub get
+        run: flutter pub get
 
       - name: Generate code
-        run: |
-          export PATH="$HOME/flutter/bin:$PATH"
-          dart run build_runner build --delete-conflicting-outputs
+        run: dart run build_runner build --delete-conflicting-outputs
 
-      - name: Accept Android licenses
-        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-
-      - name: Build APK release arm64
-        run: |
-          export PATH="$HOME/flutter/bin:$PATH"
-          flutter build apk --release --target-platform android-arm64 --split-per-abi
+      - name: Build APK debug
+        run: flutter build apk --debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: FlClashRP-release-arm64
-          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          name: FlClashRP-debug
+          path: build/app/outputs/flutter-apk/app-debug.apk
           retention-days: 7
