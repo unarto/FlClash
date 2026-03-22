@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [ main, develop, feature/* ]
+    branches: [ main, develop, feature/codex-ready ]
   workflow_dispatch:
 
 jobs:
@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: feature/codex-ready
 
       - name: Setup Java
         uses: actions/setup-java@v4
