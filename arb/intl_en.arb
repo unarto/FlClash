@@ -476,5 +476,20 @@
   "restoreOnlyConfig": "Restore configuration files only",
   "restoreAllData": "Restore all data",
   "addProfile": "Add Profile",
-  "delayTest": "Delay Test"
+  "delayTest": "Delay Test",
+  "russia2026Preset": "Russia 2026",
+  "russia2026PresetDesc": "Settings for use in Russia",
+  "russia2026PresetConfirmTitle": "Russia 2026",
+  "russia2026PresetConfirmMessage": "Apply settings for Russia?\n\nYouTube, Telegram, Gemini — via VPN\nBanks — direct connection\nDNS — via Cloudflare",
+  "russia2026PresetApplied": "Russia settings applied",
+  "russia2026PresetReset": "Settings reset",
+  "checkAccess": "Check access",
+  "accessible": "Accessible",
+  "notAccessible": "Not accessible",
+  "yourIp": "Your IP",
+  "russianSites": "Russian sites",
+  "changeServer": "Change server",
+  "reconnect": "Reconnect",
+  "updateServers": "Update servers",
+  "checkInternet": "Check internet"
 }
