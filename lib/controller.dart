@@ -335,15 +335,54 @@ extension ProfilesControllerExt on AppController {
   }
 
   Future<void> addProfileFormURL(String url) async {
-    if (globalState.navigatorKey.currentState?.canPop() ?? false) {
-      globalState.navigatorKey.currentState?.popUntil((route) => route.isFirst);
-    }
-    toProfiles();
-    final profile = await loadingRun(tag: LoadingTag.profiles, () async {
-      return await Profile.normal(url: url).update();
-    }, title: appLocalizations.addProfile);
-    if (profile != null) {
-      putProfile(profile);
+    try {
+      if (globalState.navigatorKey.currentState?.canPop() ?? false) {
+        globalState.navigatorKey.currentState?.popUntil(
+          (route) => route.isFirst,
+        );
+      }
+      toProfiles();
+      final profile = await loadingRun(tag: LoadingTag.profiles, () async {
+        return await Profile.normal(url: url).update();
+      }, title: appLocalizations.addProfile);
+      if (profile != null) {
+        putProfile(profile);
+        await globalState.showMessage(
+          title: appLocalizations.addProfile,
+          message: const TextSpan(text: 'Серверы загружены ✅'),
+        );
+      }
+    } on SocketException {
+      await globalState.showMessage(
+        title: appLocalizations.addProfile,
+        message: const TextSpan(text: 'Проверьте интернет-соединение'),
+      );
+    } on TimeoutException {
+      await globalState.showMessage(
+        title: appLocalizations.addProfile,
+        message: const TextSpan(text: 'Проверьте интернет-соединение'),
+      );
+    } on FormatException {
+      await globalState.showMessage(
+        title: appLocalizations.addProfile,
+        message: const TextSpan(text: 'Неверный формат ссылки'),
+      );
+    } catch (e) {
+      final errorText = e.toString().toLowerCase();
+      if (errorText.contains('parse')) {
+        await globalState.showMessage(
+          title: appLocalizations.addProfile,
+          message: const TextSpan(text: 'Неверный формат ссылки'),
+        );
+        return;
+      }
+      await globalState.showMessage(
+        title: appLocalizations.addProfile,
+        message: const TextSpan(
+          text:
+              'Не удалось загрузить серверы. Попробуйте скопировать текст настроек вручную',
+        ),
+      );
     }
   }
 

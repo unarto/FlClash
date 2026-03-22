@@ -40,6 +40,44 @@ const _russia2026Tun = Tun(
 const _russia2026Rules = [
   'DST-PORT,443,REJECT,udp',
   'GEOSITE,google,Proxy',
+  // Государственные
+  'DOMAIN-SUFFIX,gosuslugi.ru,DIRECT',
+  'DOMAIN-SUFFIX,kremlin.ru,DIRECT',
+  'DOMAIN-SUFFIX,government.ru,DIRECT',
+  'DOMAIN-SUFFIX,mchs.gov.ru,DIRECT',
+  'DOMAIN-SUFFIX,npd.nalog.ru,DIRECT',
+  'DOMAIN-SUFFIX,gov.ru,DIRECT',
+  // Соцсети и коммуникации
+  'DOMAIN-SUFFIX,vk.com,DIRECT',
+  'DOMAIN-SUFFIX,ok.ru,DIRECT',
+  'DOMAIN-SUFFIX,mail.ru,DIRECT',
+  'DOMAIN-SUFFIX,max.ru,DIRECT',
+  // Поиск и инфраструктура
+  'DOMAIN-SUFFIX,yandex.ru,DIRECT',
+  'DOMAIN-SUFFIX,dzen.ru,DIRECT',
+  // Финансы
+  'DOMAIN-SUFFIX,sberbank.ru,DIRECT',
+  'DOMAIN-SUFFIX,mironline.ru,DIRECT',
+  'DOMAIN-SUFFIX,vtb.ru,DIRECT',
+  'DOMAIN-SUFFIX,alfabank.ru,DIRECT',
+  'DOMAIN-SUFFIX,gazprombank.ru,DIRECT',
+  'DOMAIN-SUFFIX,psbank.ru,DIRECT',
+  // Торговля
+  'DOMAIN-SUFFIX,ozon.ru,DIRECT',
+  'DOMAIN-SUFFIX,wildberries.ru,DIRECT',
+  'DOMAIN-SUFFIX,market.yandex.ru,DIRECT',
+  'DOMAIN-SUFFIX,avito.ru,DIRECT',
+  'DOMAIN-SUFFIX,kuper.ru,DIRECT',
+  // Транспорт
+  'DOMAIN-SUFFIX,rzd.ru,DIRECT',
+  'DOMAIN-SUFFIX,aeroflot.ru,DIRECT',
+  'DOMAIN-SUFFIX,2gis.ru,DIRECT',
+  'DOMAIN-SUFFIX,maps.yandex.ru,DIRECT',
+  // Видео и СМИ
+  'DOMAIN-SUFFIX,rutube.ru,DIRECT',
+  'DOMAIN-SUFFIX,wink.ru,DIRECT',
+  'DOMAIN-SUFFIX,kinopoisk.ru,DIRECT',
+  'DOMAIN-SUFFIX,smotrim.ru,DIRECT',
   'GEOIP,ru,DIRECT',
   'DOMAIN-SUFFIX,ru,DIRECT',
   'DOMAIN-SUFFIX,xn--p1ai,DIRECT',
