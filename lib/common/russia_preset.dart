@@ -117,7 +117,7 @@ void applyRussia2026Preset(WidgetRef ref) {
   );
   final currentRuleValues = ref
       .read(globalRulesProvider)
-      .valueOrNull
+      .value
       ?.map((rule) => rule.value)
       .toSet() ??
       <String>{};
