@@ -42,6 +42,7 @@ const _russia2026Rules = [
   'GEOSITE,google,Proxy',
   // Государственные
   'DOMAIN-SUFFIX,gosuslugi.ru,DIRECT',
+  'DOMAIN-SUFFIX,gosuslugi.com,DIRECT',
   'DOMAIN-SUFFIX,kremlin.ru,DIRECT',
   'DOMAIN-SUFFIX,government.ru,DIRECT',
   'DOMAIN-SUFFIX,mchs.gov.ru,DIRECT',
@@ -54,6 +55,8 @@ const _russia2026Rules = [
   'DOMAIN-SUFFIX,max.ru,DIRECT',
   // Поиск и инфраструктура
   'DOMAIN-SUFFIX,yandex.ru,DIRECT',
+  'DOMAIN-SUFFIX,yandex.com,DIRECT',
+  'DOMAIN-SUFFIX,ya.ru,DIRECT',
   'DOMAIN-SUFFIX,dzen.ru,DIRECT',
   // Финансы
   'DOMAIN-SUFFIX,sberbank.ru,DIRECT',
@@ -62,6 +65,8 @@ const _russia2026Rules = [
   'DOMAIN-SUFFIX,alfabank.ru,DIRECT',
   'DOMAIN-SUFFIX,gazprombank.ru,DIRECT',
   'DOMAIN-SUFFIX,psbank.ru,DIRECT',
+  'DOMAIN-SUFFIX,tbank.ru,DIRECT',
+  'DOMAIN-SUFFIX,tinkoff.ru,DIRECT',
   // Торговля
   'DOMAIN-SUFFIX,ozon.ru,DIRECT',
   'DOMAIN-SUFFIX,wildberries.ru,DIRECT',
@@ -101,7 +106,10 @@ void applyRussia2026Preset(WidgetRef ref) {
   ref.read(overrideDnsProvider.notifier).value = true;
   ref.read(vpnSettingProvider.notifier).update(
     (state) => state.copyWith(
-      enable: true, systemProxy: false, ipv6: false, allowBypass: true,
+      enable: true,
+      systemProxy: false,
+      ipv6: false,
+      allowBypass: true,
     ),
   );
   ref.read(networkSettingProvider.notifier).update(
@@ -129,7 +137,10 @@ void resetRussia2026Preset(WidgetRef ref) {
   ref.read(overrideDnsProvider.notifier).value = false;
   ref.read(vpnSettingProvider.notifier).update(
     (state) => state.copyWith(
-      enable: true, systemProxy: true, ipv6: false, allowBypass: true,
+      enable: true,
+      systemProxy: true,
+      ipv6: false,
+      allowBypass: true,
     ),
   );
   ref.read(networkSettingProvider.notifier).update(

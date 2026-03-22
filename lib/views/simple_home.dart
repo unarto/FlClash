@@ -16,40 +16,51 @@ class SimpleHomeView extends ConsumerStatefulWidget {
 
 class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
   static const _accentColor = Color(0xFFFF6D00);
+  static const _backgroundColor = Color(0xFF111214);
+  static const _cardRadius = 24.0;
+  static const _onlineIndicatorColor = Colors.greenAccent;
+  static const _offlineIndicatorColor = Colors.grey;
+  static const _activePowerEndColor = Color(0xFFFF8F3D);
 
   Future<void> _showImportDialog() async {
     final controller = TextEditingController();
-    final shouldImport = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Импорт ключа'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(
-              hintText: 'Вставьте ссылку',
-              border: OutlineInputBorder(),
+
+    try {
+      final shouldImport = await showDialog<bool>(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Импорт ключа'),
+            content: TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: 'Вставьте ссылку',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 2,
             ),
-            maxLines: 2,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Отмена'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Импортировать'),
-            ),
-          ],
-        );
-      },
-    );
-    final url = controller.text.trim();
-    controller.dispose();
-    if (shouldImport != true || url.isEmpty) return;
-    await appController.addProfileFormURL(url);
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Отмена'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Импортировать'),
+              ),
+            ],
+          );
+        },
+      );
+      final url = controller.text.trim();
+      if (shouldImport != true || url.isEmpty) {
+        return;
+      }
+      await appController.addProfileFormURL(url);
+    } finally {
+      controller.dispose();
+    }
   }
 
   void _toggleConnection(bool isStart) {
@@ -71,7 +82,7 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
     final profileCount = ref.watch(profilesProvider.select((state) => state.length));
 
     return Scaffold(
-      backgroundColor: const Color(0xFF111214),
+      backgroundColor: _backgroundColor,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(20),
@@ -101,7 +112,7 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
                     width: 10,
                     height: 10,
                     decoration: BoxDecoration(
-                      color: isStart ? Colors.greenAccent : Colors.grey,
+                      color: isStart ? _onlineIndicatorColor : _offlineIndicatorColor,
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -109,7 +120,7 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
                   Text(
                     isStart ? 'Подключено' : 'Отключено',
                     style: TextStyle(
-                      color: isStart ? Colors.greenAccent : Colors.grey.shade400,
+                      color: isStart ? _onlineIndicatorColor : Colors.grey.shade400,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -137,10 +148,12 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
                       icon: Icons.power_settings_new,
                       title: '⚡ Вкл / Выкл',
                       subtitle: isStart
-                          ? (runTime != null ? 'Работает: ${utils.getTimeText(runTime)}' : 'Подключено')
+                          ? (runTime != null
+                              ? 'Работает: ${utils.getTimeText(runTime)}'
+                              : 'Подключено')
                           : 'Сейчас отключено',
                       startColor: isStart ? _accentColor : Colors.grey.shade700,
-                      endColor: isStart ? const Color(0xFFFF8F3D) : Colors.grey.shade600,
+                      endColor: isStart ? _activePowerEndColor : Colors.grey.shade600,
                       onTap: () => _toggleConnection(isStart),
                     ),
                     _HomeCard(
@@ -196,10 +209,10 @@ class _HomeCard extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       elevation: 4,
-      borderRadius: BorderRadius.circular(24),
+      borderRadius: BorderRadius.circular(_SimpleHomeViewState._cardRadius),
       child: Ink(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(_SimpleHomeViewState._cardRadius),
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
@@ -207,7 +220,7 @@ class _HomeCard extends StatelessWidget {
           ),
         ),
         child: InkWell(
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(_SimpleHomeViewState._cardRadius),
           onTap: onTap,
           child: SizedBox(
             height: 160,
