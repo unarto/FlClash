@@ -19,7 +19,6 @@ class WindowSetting extends _$WindowSetting with AutoDisposeNotifierMixin {
     return WindowProps();
   }
 
-  void hello() {}
 }
 
 @riverpod

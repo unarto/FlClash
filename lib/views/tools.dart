@@ -49,7 +49,7 @@ class _ToolViewState extends ConsumerState<ToolsView> {
           _buildNavigationMenuItem(navigationItem),
           navigationItems.last != navigationItem
               ? const Divider(height: 0)
-              : Container(),
+              : const SizedBox.shrink(),
         ],
       ],
     );
@@ -92,10 +92,8 @@ class _ToolViewState extends ConsumerState<ToolsView> {
 
   @override
   Widget build(BuildContext context) {
-    final vm2 = ref.watch(
-      appSettingProvider.select(
-        (state) => VM2(state.locale, state.developerMode),
-      ),
+    final enableDeveloperMode = ref.watch(
+      appSettingProvider.select((state) => state.developerMode),
     );
     final items = [
       Consumer(
@@ -113,7 +111,7 @@ class _ToolViewState extends ConsumerState<ToolsView> {
         },
       ),
       ..._getSettingList(),
-      ..._getOtherList(vm2.b),
+      ..._getOtherList(enableDeveloperMode),
     ];
     return CommonScaffold(
       title: context.appLocalizations.tools,

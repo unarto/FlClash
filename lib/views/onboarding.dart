@@ -13,6 +13,8 @@ class OnboardingView extends ConsumerStatefulWidget {
 }
 
 class _OnboardingViewState extends ConsumerState<OnboardingView> {
+  static const _lastPageIndex = 2;
+
   final PageController _pageController = PageController();
 
   @override
@@ -25,7 +27,7 @@ class _OnboardingViewState extends ConsumerState<OnboardingView> {
     if (!mounted || !_pageController.hasClients) return;
 
     final currentPage = _pageController.page?.round() ?? _pageController.initialPage;
-    if (currentPage >= 2) return;
+    if (currentPage >= _lastPageIndex) return;
 
     await _pageController.nextPage(
       duration: const Duration(milliseconds: 250),
@@ -71,6 +73,11 @@ class _OnboardingViewState extends ConsumerState<OnboardingView> {
     Navigator.of(context).pop();
   }
 
+  Future<void> _applyRussiaPresetAndContinue() async {
+    applyRussia2026Preset(ref);
+    await _nextPage();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -103,9 +110,7 @@ class _OnboardingViewState extends ConsumerState<OnboardingView> {
                   const SizedBox(height: 12),
                   _buildSecondaryButton(
                     text: 'Пропустить',
-                    onPressed: () {
-                      _nextPage();
-                    },
+                    onPressed: _nextPage,
                   ),
                 ],
               ),
@@ -132,17 +137,12 @@ class _OnboardingViewState extends ConsumerState<OnboardingView> {
                   const Spacer(),
                   _buildPrimaryButton(
                     text: 'Да, я в России',
-                    onPressed: () {
-                      applyRussia2026Preset(ref);
-                      _nextPage();
-                    },
+                    onPressed: _applyRussiaPresetAndContinue,
                   ),
                   const SizedBox(height: 12),
                   _buildSecondaryButton(
                     text: 'Нет',
-                    onPressed: () {
-                      _nextPage();
-                    },
+                    onPressed: _nextPage,
                   ),
                 ],
               ),

@@ -115,9 +115,17 @@ void applyRussia2026Preset(WidgetRef ref) {
   ref.read(networkSettingProvider.notifier).update(
     (state) => state.copyWith(systemProxy: false),
   );
+  final currentRuleValues = ref
+      .read(globalRulesProvider)
+      .valueOrNull
+      ?.map((rule) => rule.value)
+      .toSet() ??
+      <String>{};
   final globalRules = ref.read(globalRulesProvider.notifier);
   for (final ruleValue in _russia2026Rules.reversed) {
-    globalRules.put(Rule.value(ruleValue));
+    if (currentRuleValues.add(ruleValue)) {
+      globalRules.put(Rule.value(ruleValue));
+    }
   }
 }
 

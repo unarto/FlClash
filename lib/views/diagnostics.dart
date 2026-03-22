@@ -55,25 +55,23 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
       }
     });
 
-    final results = await Future.wait(
+    final serviceResultsFuture = Future.wait(
       _services.map((service) => _checkService(service.url)),
     );
+    final ipInfoFuture = _fetchIpInfo();
+    final serviceResults = await serviceResultsFuture;
+    final ipInfoResult = await ipInfoFuture;
 
     if (!mounted) return;
 
     setState(() {
       for (var i = 0; i < _services.length; i++) {
-        _statuses[_services[i].key] = results[i] ? _CheckStatus.ok : _CheckStatus.fail;
+        _statuses[_services[i].key] =
+            serviceResults[i] ? _CheckStatus.ok : _CheckStatus.fail;
       }
-      _isChecking = false;
-    });
-
-    final ipInfoResult = await _fetchIpInfo();
-    if (!mounted) return;
-
-    setState(() {
       _ipInfoText = ipInfoResult.text;
       _ipInfoError = ipInfoResult.error;
+      _isChecking = false;
     });
   }
 
@@ -166,25 +164,24 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
       return null;
     }
 
-    final statuses = _statuses;
-    final allFailed = statuses.values.every((status) => status == _CheckStatus.fail);
+    final allFailed = _statuses.values.every((status) => status == _CheckStatus.fail);
     if (allFailed) {
       return 'Проверьте интернет-соединение';
     }
 
-    final geminiFailed = statuses['gemini'] == _CheckStatus.fail;
-    final banksFailed = statuses['banks'] == _CheckStatus.fail;
+    final geminiFailed = _statuses['gemini'] == _CheckStatus.fail;
+    final banksFailed = _statuses['banks'] == _CheckStatus.fail;
 
     final othersExceptGemini = _services
         .where((service) => service.key != 'gemini')
-        .every((service) => statuses[service.key] == _CheckStatus.ok);
+        .every((service) => _statuses[service.key] == _CheckStatus.ok);
     if (geminiFailed && othersExceptGemini) {
       return 'Смените сервер на Европу или США';
     }
 
     final othersExceptBanks = _services
         .where((service) => service.key != 'banks')
-        .every((service) => statuses[service.key] == _CheckStatus.ok);
+        .every((service) => _statuses[service.key] == _CheckStatus.ok);
     if (banksFailed && othersExceptBanks) {
       return 'Отключите VPN для российских сайтов';
     }
@@ -216,7 +213,7 @@ class _DiagnosticsViewState extends ConsumerState<DiagnosticsView> {
                 _buildSubtitle(_statuses[service.key] ?? _CheckStatus.idle),
               ),
             ),
-            service != _services.last ? const Divider(height: 0) : const SizedBox.shrink(),
+            if (service != _services.last) const Divider(height: 0),
           ],
           if (_ipInfoText != null)
             Padding(

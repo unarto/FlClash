@@ -1,7 +1,6 @@
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/common/russia_preset.dart';
 import 'package:fl_clash/controller.dart';
-import 'package:fl_clash/providers/database.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/views/tools.dart';
 import 'package:flutter/material.dart';
@@ -21,6 +20,17 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
   static const _onlineIndicatorColor = Colors.greenAccent;
   static const _offlineIndicatorColor = Colors.grey;
   static const _activePowerEndColor = Color(0xFFFF8F3D);
+  static const _titleStyle = TextStyle(
+    fontSize: 32,
+    fontWeight: FontWeight.w800,
+    color: Colors.white,
+  );
+  static const _cardTitleStyle = TextStyle(
+    fontSize: 16,
+    fontWeight: FontWeight.w800,
+    color: Colors.white,
+  );
+  static const _sectionSpacing = SizedBox(height: 24);
 
   Future<void> _showImportDialog() async {
     final controller = TextEditingController();
@@ -63,8 +73,17 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
     }
   }
 
-  void _toggleConnection(bool isStart) {
-    appController.updateStatus(!isStart, isInit: !ref.read(initProvider));
+  Future<void> _openTools() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ToolsView()),
+    );
+  }
+
+  Future<void> _toggleConnection(bool isStarted) async {
+    await appController.updateStatus(
+      !isStarted,
+      isInit: !ref.read(initProvider),
+    );
   }
 
   Future<void> _applyRussiaPreset() async {
@@ -77,9 +96,21 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
 
   @override
   Widget build(BuildContext context) {
-    final isStart = ref.watch(isStartProvider);
+    final isStarted = ref.watch(isStartProvider);
     final runTime = ref.watch(runTimeProvider);
-    final profileCount = ref.watch(profilesProvider.select((state) => state.length));
+    final profileCount = ref.watch(
+      profilesProvider.select((state) => state.length),
+    );
+    final statusText = isStarted ? 'Подключено' : 'Отключено';
+    final statusColor = isStarted ? _onlineIndicatorColor : Colors.grey.shade400;
+    final powerSubtitle = isStarted
+        ? (runTime != null
+            ? 'Работает: ${utils.getTimeText(runTime)}'
+            : 'Подключено')
+        : 'Сейчас отключено';
+    final importSubtitle = profileCount > 0
+        ? 'Профилей: $profileCount'
+        : 'Вставьте ссылку на подписку';
 
     return Scaffold(
       backgroundColor: _backgroundColor,
@@ -89,21 +120,11 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'FlClashRP',
-                style: TextStyle(
-                  fontSize: 32,
-                  fontWeight: FontWeight.w800,
-                  color: Colors.white,
-                ),
-              ),
+              const Text('FlClashRP', style: _titleStyle),
               const SizedBox(height: 6),
               Text(
                 'Свободный интернет',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.grey.shade400,
-                ),
+                style: TextStyle(fontSize: 16, color: Colors.grey.shade400),
               ),
               const SizedBox(height: 16),
               Row(
@@ -112,21 +133,23 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
                     width: 10,
                     height: 10,
                     decoration: BoxDecoration(
-                      color: isStart ? _onlineIndicatorColor : _offlineIndicatorColor,
+                      color: isStarted
+                          ? _onlineIndicatorColor
+                          : _offlineIndicatorColor,
                       shape: BoxShape.circle,
                     ),
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    isStart ? 'Подключено' : 'Отключено',
+                    statusText,
                     style: TextStyle(
-                      color: isStart ? _onlineIndicatorColor : Colors.grey.shade400,
+                      color: statusColor,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 24),
+              _sectionSpacing,
               Expanded(
                 child: GridView.count(
                   crossAxisCount: 2,
@@ -137,9 +160,7 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
                     _HomeCard(
                       icon: Icons.download_rounded,
                       title: '📥 Импорт ключа',
-                      subtitle: profileCount > 0
-                          ? 'Профилей: $profileCount'
-                          : 'Вставьте ссылку на подписку',
+                      subtitle: importSubtitle,
                       startColor: Colors.blue.shade700,
                       endColor: Colors.blue.shade500,
                       onTap: _showImportDialog,
@@ -147,14 +168,12 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
                     _HomeCard(
                       icon: Icons.power_settings_new,
                       title: '⚡ Вкл / Выкл',
-                      subtitle: isStart
-                          ? (runTime != null
-                              ? 'Работает: ${utils.getTimeText(runTime)}'
-                              : 'Подключено')
-                          : 'Сейчас отключено',
-                      startColor: isStart ? _accentColor : Colors.grey.shade700,
-                      endColor: isStart ? _activePowerEndColor : Colors.grey.shade600,
-                      onTap: () => _toggleConnection(isStart),
+                      subtitle: powerSubtitle,
+                      startColor: isStarted ? _accentColor : Colors.grey.shade700,
+                      endColor: isStarted
+                          ? _activePowerEndColor
+                          : Colors.grey.shade600,
+                      onTap: () => _toggleConnection(isStarted),
                     ),
                     _HomeCard(
                       icon: Icons.flag_rounded,
@@ -170,11 +189,7 @@ class _SimpleHomeViewState extends ConsumerState<SimpleHomeView> {
                       subtitle: 'Открыть инструменты',
                       startColor: Colors.grey.shade700,
                       endColor: Colors.grey.shade600,
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const ToolsView()),
-                        );
-                      },
+                      onTap: _openTools,
                     ),
                   ],
                 ),
@@ -193,7 +208,7 @@ class _HomeCard extends StatelessWidget {
   final String subtitle;
   final Color startColor;
   final Color endColor;
-  final VoidCallback onTap;
+  final Future<void> Function() onTap;
 
   const _HomeCard({
     required this.icon,
@@ -206,13 +221,14 @@ class _HomeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final borderRadius = BorderRadius.circular(_SimpleHomeViewState._cardRadius);
     return Material(
       color: Colors.transparent,
       elevation: 4,
-      borderRadius: BorderRadius.circular(_SimpleHomeViewState._cardRadius),
+      borderRadius: borderRadius,
       child: Ink(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(_SimpleHomeViewState._cardRadius),
+          borderRadius: borderRadius,
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
@@ -220,35 +236,27 @@ class _HomeCard extends StatelessWidget {
           ),
         ),
         child: InkWell(
-          borderRadius: BorderRadius.circular(_SimpleHomeViewState._cardRadius),
-          onTap: onTap,
-          child: SizedBox(
-            height: 160,
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(icon, size: 40, color: Colors.white),
-                  const Spacer(),
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                    ),
+          borderRadius: borderRadius,
+          onTap: () async {
+            await onTap();
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, size: 40, color: Colors.white),
+                const Spacer(),
+                Text(title, style: _SimpleHomeViewState._cardTitleStyle),
+                const SizedBox(height: 8),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.white.withValues(alpha: 0.86),
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: Colors.white.withValues(alpha: 0.86),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),
