@@ -22,6 +22,17 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        
+        val flutterSdkPath = run {
+            val properties = java.util.Properties()
+            file("local.properties").inputStream().use { properties.load(it) }
+            properties.getProperty("flutter.sdk")
+        }
+        if (flutterSdkPath != null) {
+            maven {
+                url = uri("$flutterSdkPath/bin/cache/artifacts/engine")
+            }
+        }
     }
 }
 

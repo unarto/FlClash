@@ -1,4 +1,10 @@
 ```
-# Dependencies
-/pubspec.lock
+# Gradle
+.gradle/
+build/
+
+# Android
+.gradle/
+local.properties
+.settings/
 ```
