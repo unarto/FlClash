@@ -1,7 +1,13 @@
 include: package:flutter_lints/flutter.yaml
+
 analyzer:
   exclude:
     - lib/l10n/intl/**
+    - lib/models/generated/**
+    - lib/providers/generated/**
+    - plugins/**
+    - core/**
+    - services/**
   errors:
     invalid_annotation_target: ignore
 
