@@ -1,5 +1,5 @@
 name: fl_clash
-description: Свободный интернет в одну кнопку. VPN-клиент для России. (P)
+description: Свободный интернет в одну кнопку. VPN-клиент для России.
 publish_to: 'none'
 version: 0.8.92+2026020201
 environment:
