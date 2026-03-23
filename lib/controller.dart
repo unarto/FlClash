@@ -14,7 +14,6 @@ import 'package:url_launcher/url_launcher.dart';
 import 'common/common.dart';
 import 'database/database.dart';
 import 'models/models.dart';
-import 'providers/database.dart';
 
 class AppController {
   late final BuildContext _context;
