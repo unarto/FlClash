@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/core.dart';
 import 'package:fl_clash/l10n/l10n.dart';
@@ -55,17 +54,25 @@ class ApplicationState extends ConsumerState<Application> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) async {
       final currentContext = globalState.navigatorKey.currentContext;
-      if (currentContext != null) {
+      if (currentContext != null && mounted) {
         await appController.attach(currentContext, ref);
       } else {
-        exit(0);
+        commonPrint.log('Warning: navigator context not ready, retrying...');
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          final retryContext = globalState.navigatorKey.currentContext;
+          if (retryContext != null && mounted) {
+            await appController.attach(retryContext, ref);
+          } else {
+            commonPrint.log('Error: Could not attach controller');
+          }
+        });
       }
       _autoUpdateProfilesTask();
       appController.initLink();
       app?.initShortcuts();
       WidgetsBinding.instance.addPostFrameCallback((_) {
         final appSetting = ref.read(appSettingProvider);
-        if (!appSetting.disclaimerAccepted) {
+        if (!appSetting.disclaimerAccepted && mounted) {
           Navigator.of(context).push(
             MaterialPageRoute(
               fullscreenDialog: true,
