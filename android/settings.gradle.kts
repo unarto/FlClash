@@ -16,26 +16,6 @@ pluginManagement {
     }
 }
 
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
-
-    repositories {
-        google()
-        mavenCentral()
-        
-        val flutterSdkPath = run {
-            val properties = java.util.Properties()
-            file("local.properties").inputStream().use { properties.load(it) }
-            properties.getProperty("flutter.sdk")
-        }
-        if (flutterSdkPath != null) {
-            maven {
-                url = uri("$flutterSdkPath/bin/cache/artifacts/engine")
-            }
-        }
-    }
-}
-
 plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "8.9.1" apply false
