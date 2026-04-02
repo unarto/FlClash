@@ -27,7 +27,9 @@
             <td>Windows</td>
             <td>
                 <a href="https://github.com/chen08209/FlClash/releases/download/vVERSION/FlClash-VERSION-windows-amd64-setup.exe"><img src="https://img.shields.io/badge/Setup-x64-2d7d9a.svg?logo=windows"></a><br>
-                <a href="https://github.com/chen08209/FlClash/releases/download/vVERSION/FlClash-VERSION-windows-amd64.zip"><img src="https://img.shields.io/badge/Portable-x64-67b7d1.svg?logo=windows"></a>
+                <a href="https://github.com/chen08209/FlClash/releases/download/vVERSION/FlClash-VERSION-windows-amd64.zip"><img src="https://img.shields.io/badge/Portable-x64-67b7d1.svg?logo=windows"></a><br>
+                <a href="https://github.com/chen08209/FlClash/releases/download/vVERSION/FlClash-VERSION-windows-arm64-setup.exe"><img src="https://img.shields.io/badge/Setup-ARM64-005a9c.svg?logo=windows"></a><br>
+                <a href="https://github.com/chen08209/FlClash/releases/download/vVERSION/FlClash-VERSION-windows-arm64.zip"><img src="https://img.shields.io/badge/Portable-ARM64-4c9ed9.svg?logo=windows"></a>
             </td>
         </tr>
         <tr>
