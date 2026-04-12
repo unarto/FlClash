@@ -222,6 +222,10 @@ class MessageLookup extends MessageLookupByLibrary {
     "entries": MessageLookupByLibrary.simpleMessage("个条目"),
     "exclude": MessageLookupByLibrary.simpleMessage("从最近任务中隐藏"),
     "excludeDesc": MessageLookupByLibrary.simpleMessage("应用在后台时,从最近任务中隐藏应用"),
+    "excludeWebDAV": MessageLookupByLibrary.simpleMessage("排除WebDAV账号"),
+    "excludeWebDAVDesc": MessageLookupByLibrary.simpleMessage(
+      "不在备份文件中包含WebDAV账号信息",
+    ),
     "existsTip": m5,
     "exit": MessageLookupByLibrary.simpleMessage("退出"),
     "expand": MessageLookupByLibrary.simpleMessage("标准"),

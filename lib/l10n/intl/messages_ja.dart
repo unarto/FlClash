@@ -246,6 +246,10 @@ class MessageLookup extends MessageLookupByLibrary {
     "excludeDesc": MessageLookupByLibrary.simpleMessage(
       "アプリがバックグラウンド時に最近のタスクから非表示",
     ),
+    "excludeWebDAV": MessageLookupByLibrary.simpleMessage("WebDAVアカウントを除外"),
+    "excludeWebDAVDesc": MessageLookupByLibrary.simpleMessage(
+      "バックアップファイルにWebDAVアカウント情報を含めない",
+    ),
     "existsTip": m5,
     "exit": MessageLookupByLibrary.simpleMessage("終了"),
     "expand": MessageLookupByLibrary.simpleMessage("標準"),

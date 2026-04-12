@@ -1009,6 +1009,12 @@ extension BackupControllerExt on AppController {
     );
     final configMap = _ref.read(configProvider).toJson();
     configMap['version'] = await preferences.getVersion();
+    final excludeWebDAV = _ref.read(
+      appSettingProvider.select((state) => state.excludeWebDAV),
+    );
+    if (excludeWebDAV) {
+      configMap.remove('davProps');
+    }
     return await backupTask(configMap, [
       ...profileFileNames,
       ...scriptFileNames,
