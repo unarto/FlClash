@@ -377,6 +377,8 @@
   "restoreStrategy": "復元ストラテジー",
   "restoreStrategy_override": "上書き",
   "restoreStrategy_compatible": "互換",
+  "excludeWebDAV": "WebDAVアカウントを除外",
+  "excludeWebDAVDesc": "バックアップファイルにWebDAVアカウント情報を含めない",
   "logsTest": "ログテスト",
   "emptyTip": "{label}は空欄にできません",
   "urlTip": "{label}はURLである必要があります",

@@ -338,6 +338,12 @@ class MessageLookup extends MessageLookupByLibrary {
     "excludeDesc": MessageLookupByLibrary.simpleMessage(
       "Когда приложение находится в фоновом режиме, оно скрыто из последних задач",
     ),
+    "excludeWebDAV": MessageLookupByLibrary.simpleMessage(
+      "Исключить аккаунт WebDAV",
+    ),
+    "excludeWebDAVDesc": MessageLookupByLibrary.simpleMessage(
+      "Не включать информацию об аккаунте WebDAV в файлы резервных копий",
+    ),
     "existsTip": m5,
     "exit": MessageLookupByLibrary.simpleMessage("Выход"),
     "expand": MessageLookupByLibrary.simpleMessage("Стандартный"),

@@ -385,6 +385,8 @@
   "restoreStrategy": "Стратегия восстановления",
   "restoreStrategy_override": "Перезаписать",
   "restoreStrategy_compatible": "Совместимый",
+  "excludeWebDAV": "Исключить аккаунт WebDAV",
+  "excludeWebDAVDesc": "Не включать информацию об аккаунте WebDAV в файлы резервных копий",
   "logsTest": "Тест журналов",
   "emptyTip": "{label} не может быть пустым",
   "urlTip": "{label} должен быть URL",

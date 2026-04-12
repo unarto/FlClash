@@ -2889,6 +2889,26 @@ class AppLocalizations {
     );
   }
 
+  /// `Exclude WebDAV account`
+  String get excludeWebDAV {
+    return Intl.message(
+      'Exclude WebDAV account',
+      name: 'excludeWebDAV',
+      desc: '',
+      args: [],
+    );
+  }
+
+  /// `Do not include WebDAV account information in backup files`
+  String get excludeWebDAVDesc {
+    return Intl.message(
+      'Do not include WebDAV account information in backup files',
+      name: 'excludeWebDAVDesc',
+      desc: '',
+      args: [],
+    );
+  }
+
   /// `Logs test`
   String get logsTest {
     return Intl.message('Logs test', name: 'logsTest', desc: '', args: []);

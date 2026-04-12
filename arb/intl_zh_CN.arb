@@ -377,6 +377,8 @@
   "restoreStrategy": "恢复策略",
   "restoreStrategy_override": "覆盖",
   "restoreStrategy_compatible": "兼容",
+  "excludeWebDAV": "排除WebDAV账号",
+  "excludeWebDAVDesc": "不在备份文件中包含WebDAV账号信息",
   "logsTest": "日志测试",
   "emptyTip": "{label}不能为空",
   "urlTip": "{label}必须为URL",

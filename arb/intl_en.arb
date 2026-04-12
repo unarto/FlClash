@@ -376,6 +376,8 @@
   "restoreStrategy": "Restore strategy",
   "restoreStrategy_override": "Override",
   "restoreStrategy_compatible": "Compatible",
+  "excludeWebDAV": "Exclude WebDAV account",
+  "excludeWebDAVDesc": "Do not include WebDAV account information in backup files",
   "logsTest": "Logs test",
   "emptyTip": "{label} cannot be empty",
   "urlTip": "{label} must be a url",

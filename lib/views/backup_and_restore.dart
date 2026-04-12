@@ -282,6 +282,27 @@ class BackupAndRestore extends ConsumerWidget {
           ListHeader(title: appLocalizations.options),
           Consumer(
             builder: (_, ref, _) {
+              final excludeWebDAV = ref.watch(
+                appSettingProvider.select((state) => state.excludeWebDAV),
+              );
+              return ListItem.switchItem(
+                title: Text(appLocalizations.excludeWebDAV),
+                subtitle: Text(appLocalizations.excludeWebDAVDesc),
+                delegate: SwitchDelegate(
+                  value: excludeWebDAV,
+                  onChanged: (value) {
+                    ref
+                        .read(appSettingProvider.notifier)
+                        .update(
+                          (state) => state.copyWith(excludeWebDAV: value),
+                        );
+                  },
+                ),
+              );
+            },
+          ),
+          Consumer(
+            builder: (_, ref, _) {
               final restoreStrategy = ref.watch(
                 appSettingProvider.select((state) => state.restoreStrategy),
               );
