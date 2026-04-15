@@ -886,6 +886,22 @@ extension SystemControllerExt on AppController {
     }
   }
 
+  /// Window close that bypasses [backBlockProvider].
+  /// Used exclusively by the window title-bar close button, the
+  /// window-close system event, and the Ctrl+W shortcut so that
+  /// they always work even when a search / edit overlay has set
+  /// backBlock to true.
+  Future<void> handleWindowClose() async {
+    if (_ref.read(appSettingProvider).minimizeOnExit) {
+      if (system.isDesktop) {
+        await preferences.saveConfig(config);
+      }
+      await system.back();
+    } else {
+      await handleExit();
+    }
+  }
+
   Future<void> updateVisible() async {
     final visible = await window?.isVisible;
     if (visible != null && !visible) {

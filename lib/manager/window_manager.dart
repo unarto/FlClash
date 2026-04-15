@@ -44,7 +44,7 @@ class _WindowContainerState extends ConsumerState<WindowManager>
 
   @override
   void onWindowClose() async {
-    await appController.handleBackOrExit();
+    await appController.handleWindowClose();
     super.onWindowClose();
   }
 
@@ -220,7 +220,7 @@ class _WindowHeaderState extends State<WindowHeader> {
         ),
         IconButton(
           onPressed: () {
-            appController.handleBackOrExit();
+            appController.handleWindowClose();
           },
           icon: const Icon(Icons.close),
         ),
