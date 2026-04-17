@@ -20,7 +20,7 @@ import (
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
-	"golang.org/x/exp/slices"
+	"slices"
 	"net"
 	"os"
 	"runtime"
@@ -156,7 +156,7 @@ func handleChangeProxy(data string, fn func(string string)) {
 		}
 		groupName := *params.GroupName
 		proxyName := *params.ProxyName
-		proxies := tunnel.ProxiesWithProviders()
+		proxies := tunnel.Proxies()
 		group, ok := proxies[groupName]
 		if !ok {
 			fn("Not found group")
@@ -233,7 +233,7 @@ func handleAsyncTestDelay(paramsString string, fn func(string)) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(params.Timeout))
 		defer cancel()
 
-		proxies := tunnel.ProxiesWithProviders()
+		proxies := tunnel.Proxies()
 		proxy := proxies[params.ProxyName]
 
 		delayData := &Delay{
