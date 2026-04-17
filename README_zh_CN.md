@@ -116,6 +116,31 @@ on Mobile:
            dart .\setup.dart macos --arch <arm64 | amd64>
            ```
 
+### Ubuntu20 Docker 一键打包
+
+如果你希望在统一的 Ubuntu20 环境中构建 Linux 安装包，可直接使用仓库内脚本：
+
+1. 确保本机已安装 Docker
+2. 在项目根目录执行：
+
+   ```bash
+   ./build_deb_in_docker.sh
+   ```
+
+   或构建 arm64 包：
+
+   ```bash
+   ./build_deb_in_docker.sh arm64
+   ```
+
+说明：
+
+- Docker 基础镜像为 `ubuntu:20.04`，构建环境使用清华源（apt / dart pub / go proxy）
+- amd64 默认输出 `deb`、`AppImage`、`rpm` 三种格式；可通过 `FLCLASH_LINUX_TARGETS=deb` 仅构建 deb
+- 在 Ubuntu 20.04 容器内构建，保证所有打包库基于 GLib 2.64，不会出现 `g_time_zone_new_identifier` 等符号兼容问题
+- 构建产物会复制到项目根目录，便于直接安装
+- 如需自定义镜像名：`IMAGE_NAME=your-name ./build_deb_in_docker.sh`
+
 ## Star History
 
 支持开发者的最简单方式是点击页面顶部的星标（⭐）。

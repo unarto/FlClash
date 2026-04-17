@@ -1,5 +1,6 @@
 // ignore_for_file: constant_identifier_names
 
+import 'dart:io';
 import 'dart:math';
 import 'dart:ui';
 
@@ -59,11 +60,13 @@ const defaultExternalController = '127.0.0.1:9090';
 const maxMobileWidth = 600;
 const maxLaptopWidth = 840;
 const defaultTestUrl = 'https://www.gstatic.com/generate_204';
-final commonFilter = ImageFilter.blur(
-  sigmaX: 5,
-  sigmaY: 5,
-  tileMode: TileMode.mirror,
-);
+final ImageFilter? commonFilter = Platform.isLinux
+    ? null
+    : ImageFilter.blur(
+        sigmaX: 5,
+        sigmaY: 5,
+        tileMode: TileMode.mirror,
+      );
 
 const listEquality = ListEquality();
 const navigationItemListEquality = ListEquality<NavigationItem>();

@@ -479,11 +479,16 @@ class BuildCommand extends Command {
         return;
       case Target.linux:
         final targetMap = {Arch.arm64: 'linux-arm64', Arch.amd64: 'linux-x64'};
-        final targets = [
-          'deb',
-          if (arch == Arch.amd64) 'appimage',
-          if (arch == Arch.amd64) 'rpm',
-        ].join(',');
+        final customLinuxTargets =
+            Platform.environment['FLCLASH_LINUX_TARGETS']?.trim();
+        final targets = (customLinuxTargets != null &&
+                customLinuxTargets.isNotEmpty)
+            ? customLinuxTargets
+            : [
+                'deb',
+                if (arch == Arch.amd64) 'appimage',
+                if (arch == Arch.amd64) 'rpm',
+              ].join(',');
         final defaultTarget = targetMap[arch];
         await _getLinuxDependencies(arch!);
         _buildDistributor(
