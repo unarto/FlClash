@@ -79,19 +79,21 @@ class ApplicationState extends ConsumerState<Application> {
   }
 
   Widget _buildState({required Widget child}) {
-    return AppStateManager(
-      child: CoreManager(
-        child: ConnectivityManager(
-          onConnectivityChanged: (results) async {
-            commonPrint.log('connectivityChanged ${results.toString()}');
-            appController.updateLocalIp();
-            final hasVpn = results.contains(ConnectivityResult.vpn);
-            if (_preHasVpn == hasVpn) {
-              appController.addCheckIp();
-            }
-            _preHasVpn = hasVpn;
-          },
-          child: child,
+    return GlobalProxyWatchdogManager(
+      child: AppStateManager(
+        child: CoreManager(
+          child: ConnectivityManager(
+            onConnectivityChanged: (results) async {
+              commonPrint.log('connectivityChanged ${results.toString()}');
+              appController.updateLocalIp();
+              final hasVpn = results.contains(ConnectivityResult.vpn);
+              if (_preHasVpn == hasVpn) {
+                appController.addCheckIp();
+              }
+              _preHasVpn = hasVpn;
+            },
+            child: child,
+          ),
         ),
       ),
     );
