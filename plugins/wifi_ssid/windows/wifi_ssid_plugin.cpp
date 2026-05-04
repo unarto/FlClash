@@ -85,7 +85,7 @@ void WifiSsidPlugin::GetSsid(
   for (DWORD i = 0; i < pIfList->dwNumberOfItems; i++) {
     PWLAN_CONNECTION_ATTRIBUTES pConnAttrib = nullptr;
     DWORD dwDataSize = sizeof(WLAN_CONNECTION_ATTRIBUTES);
-    DWORD opCode = wlan_intf_opcode_current_connection;
+    WLAN_INTF_OPCODE opCode = wlan_intf_opcode_current_connection;
 
     dwResult = WlanQueryInterface(
         hClient, &pIfList->InterfaceInfo[i].InterfaceGuid, opCode, nullptr,
