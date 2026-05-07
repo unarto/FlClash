@@ -19,6 +19,8 @@ class _StartButtonState extends ConsumerState<StartButton>
   AnimationController? _controller;
   late Animation<double> _animation;
   bool isStart = false;
+  double? _cachedShortWidth;
+  double? _cachedLongWidth;
 
   @override
   void initState() {
@@ -66,6 +68,17 @@ class _StartButtonState extends ConsumerState<StartButton>
     });
   }
 
+  double _measureTextWidth(String text, BuildContext context) {
+    return globalState.measure
+        .computeTextSize(
+          Text(
+            text,
+            style: context.textTheme.titleMedium?.toSoftBold,
+          ),
+        )
+        .width;
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasProfile = ref.watch(
@@ -83,17 +96,14 @@ class _StartButtonState extends ConsumerState<StartButton>
       ),
       child: AnimatedBuilder(
         animation: _controller!.view,
-        builder: (_, child) {
-          final textWidth =
-              globalState.measure
-                  .computeTextSize(
-                    Text(
-                      utils.getTimeDifference(DateTime.now()),
-                      style: context.textTheme.titleMedium?.toSoftBold,
-                    ),
-                  )
-                  .width +
-              16;
+        builder: (_, __) {
+          final runTime = ref.watch(runTimeProvider);
+          final text = utils.getTimeText(runTime);
+          final isLongFormat = text.contains('d ');
+          final cachedWidth = isLongFormat
+              ? _cachedLongWidth ??= _measureTextWidth('00d 00:00:00', context)
+              : _cachedShortWidth ??= _measureTextWidth('00:00:00', context);
+          final textWidth = cachedWidth + 16;
           return FloatingActionButton(
             clipBehavior: Clip.antiAlias,
             materialTapTargetSize: MaterialTapTargetSize.padded,
@@ -113,24 +123,22 @@ class _StartButtonState extends ConsumerState<StartButton>
                     progress: _animation,
                   ),
                 ),
-                SizedBox(width: textWidth * _animation.value, child: child!),
+                SizedBox(
+                  width: textWidth * _animation.value,
+                  child: Text(
+                    text,
+                    maxLines: 1,
+                    overflow: TextOverflow.visible,
+                    style: Theme.of(context).textTheme.titleMedium?.toSoftBold
+                        .copyWith(
+                          color: context.colorScheme.onPrimaryContainer,
+                        ),
+                  ),
+                ),
               ],
             ),
           );
         },
-        child: Consumer(
-          builder: (_, ref, _) {
-            final runTime = ref.watch(runTimeProvider);
-            final text = utils.getTimeText(runTime);
-            return Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.visible,
-              style: Theme.of(context).textTheme.titleMedium?.toSoftBold
-                  .copyWith(color: context.colorScheme.onPrimaryContainer),
-            );
-          },
-        ),
       ),
     );
   }
