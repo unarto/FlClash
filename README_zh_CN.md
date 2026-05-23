@@ -103,7 +103,7 @@ on Mobile:
         2. 运行构建脚本
 
            ```bash
-           dart .\setup.dart linux --arch <arm64 | amd64>
+           dart ./setup.dart linux --arch <arm64 | amd64>
            ```
 
     - macOS
@@ -113,7 +113,7 @@ on Mobile:
         2. 运行构建脚本
 
            ```bash
-           dart .\setup.dart macos --arch <arm64 | amd64>
+           dart ./setup.dart macos --arch <arm64 | amd64>
            ```
 
 ## Star History

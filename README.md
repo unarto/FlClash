@@ -103,7 +103,7 @@ Support the following actions
         2. Run build script
 
            ```bash
-           dart .\setup.dart linux --arch <arm64 | amd64>
+           dart ./setup.dart linux --arch <arm64 | amd64>
            ```
 
     - macOS
@@ -113,7 +113,7 @@ Support the following actions
         2. Run build script
 
            ```bash
-           dart .\setup.dart macos --arch <arm64 | amd64>
+           dart ./setup.dart macos --arch <arm64 | amd64>
            ```
 
 ## Star
