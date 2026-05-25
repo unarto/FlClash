@@ -896,7 +896,13 @@ class ProfilesAction extends _$ProfilesAction {
       if (showLoading) {
         ref.read(isUpdatingProvider(profile.updatingKey).notifier).value = true;
       }
-      final newProfile = await profile.update();
+      final Profile newProfile;
+      try {
+        newProfile = await profile.update();
+      } catch (_) {
+        ref.read(profilesProvider.notifier).put(profile);
+        rethrow;
+      }
       ref.read(profilesProvider.notifier).put(newProfile);
       if (profile.id == ref.read(currentProfileIdProvider)) {
         ref
