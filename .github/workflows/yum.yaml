@@ -112,9 +112,14 @@ jobs:
           export GOARCH=arm64
           export CGO_LDFLAGS="-Wl,-soname,libclash.so"
 
+          # copyNativeLibs task এর expected structure:
+          #   libclash/android/arm64-v8a/libclash.so
+          #   libclash/android/includes/arm64-v8a/libclash.h  ← CMake এর জন্য দরকার
           mkdir -p libclash/android/arm64-v8a
+          mkdir -p libclash/android/includes/arm64-v8a
 
           cd core
+          # go build -buildmode=c-shared স্বয়ংক্রিয়ভাবে .h ও তৈরি করে
           go build \
             -buildmode=c-shared \
             -tags with_gvisor \
@@ -123,8 +128,12 @@ jobs:
             -o ../libclash/android/arm64-v8a/libclash.so \
             .
 
-          echo "✅ libclash.so built:"
-          ls -lh ../libclash/android/arm64-v8a/
+          # Go এর তৈরি .h file টা includes ফোল্ডারে সরিয়ে রাখি
+          mv ../libclash/android/arm64-v8a/libclash.h \
+             ../libclash/android/includes/arm64-v8a/libclash.h
+
+          echo "✅ Output structure:"
+          find ../libclash/android -type f | sort
 
       # ── 9. Flutter pub get + code generation ─────────────────────────────
       # material_color_utilities: Flutter master pins 0.13.0 কিন্তু pubspec-এ ^0.11.1
