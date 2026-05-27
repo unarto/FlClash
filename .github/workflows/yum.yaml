@@ -1,36 +1,166 @@
-name: Build Android ARM64
+name: Build Android ARM64 APK
 
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
+env:
+  GO_VERSION: '1.24'
+  FLUTTER_VERSION: '3.32.0'          # SDK >= 3.8.0 চাই (pubspec.yaml অনুযায়ী)
+  NDK_VERSION: '28.0.13004108'        # libs.versions.toml থেকে
+  JAVA_VERSION: '17'                  # build.gradle.kts → JVM_17
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    
+  build-android-arm64:
+    name: Build Android ARM64 APK
+    runs-on: ubuntu-22.04
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      # ── 1. Checkout (submodule সহ — core/Clash.Meta দরকার) ────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          flutter-version: '3.22.0'
+          submodules: recursive
+          fetch-depth: 0
 
-      - name: Setup Java
+      # ── 2. Java 17 ────────────────────────────────────────────────────────
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Build APK
+      # ── 3. Go (CGO দিয়ে libclash.so বানাবে) ─────────────────────────────
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: core/go.sum
+
+      # ── 4. Flutter ────────────────────────────────────────────────────────
+      - name: Set up Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # ── 5. Android SDK + NDK ──────────────────────────────────────────────
+      - name: Set up Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK ${{ env.NDK_VERSION }}
         run: |
-          flutter clean
-          flutter pub get
-          flutter build apk --release --target-platform android-arm64 --split-per-abi
+          echo "y" | sdkmanager "ndk;${{ env.NDK_VERSION }}"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
 
-      - name: Upload APK
+      # ── 6. Android Keystore (Secrets থেকে) ───────────────────────────────
+      #   Repository Secrets-এ সেট করতে হবে:
+      #     KEYSTORE_BASE64   → base64 encoded .jks file
+      #     STORE_PASSWORD    → keystore password
+      #     KEY_ALIAS         → key alias
+      #     KEY_PASSWORD      → key password
+      - name: Set up signing keystore
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/keystore.jks
+          cat >> android/local.properties << EOF
+          storePassword=${{ secrets.STORE_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          EOF
+
+      # ── 7. Go dependency cache ─────────────────────────────────────────────
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('core/go.sum') }}
+          restore-keys: go-${{ runner.os }}-
+
+      # ── 8. Build libclash.so for arm64-v8a (CGO + Android NDK) ───────────
+      #   core/build.gradle.kts expects: libclash/android/arm64-v8a/libclash.so
+      - name: Build libclash.so (arm64-v8a)
+        run: |
+          TOOLCHAIN=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+
+          export CC=$TOOLCHAIN/bin/aarch64-linux-android23-clang
+          export CXX=$TOOLCHAIN/bin/aarch64-linux-android23-clang++
+          export CGO_ENABLED=1
+          export GOOS=android
+          export GOARCH=arm64
+          export CGO_LDFLAGS="-Wl,-soname,libclash.so"
+
+          mkdir -p libclash/android/arm64-v8a
+
+          cd core
+          go build \
+            -buildmode=c-shared \
+            -tags with_gvisor \
+            -trimpath \
+            -ldflags='-w -s -buildid=' \
+            -o ../libclash/android/arm64-v8a/libclash.so \
+            .
+
+          echo "✅ libclash.so built:"
+          ls -lh ../libclash/android/arm64-v8a/
+
+      # ── 9. Flutter pub get + code generation ──────────────────────────────
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Run build_runner (code generation)
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      # ── 10. Write local.properties (flutter SDK path) ─────────────────────
+      - name: Write android/local.properties
+        run: |
+          # flutter.sdk পথ যোগ করি (signing block আগেই append করেছে)
+          echo "flutter.sdk=$(which flutter | sed 's|/bin/flutter||')" >> android/local.properties
+          echo "sdk.dir=$ANDROID_SDK_ROOT" >> android/local.properties
+
+      # ── 11. Build APK (arm64-v8a only) ────────────────────────────────────
+      - name: Build release APK (arm64-v8a)
+        run: |
+          flutter build apk \
+            --release \
+            --target-platform android-arm64 \
+            --split-per-abi \
+            --no-tree-shake-icons
+
+      # ── 12. Rename APK ────────────────────────────────────────────────────
+      - name: Rename APK
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+             dist/FlClash-${VERSION}-arm64.apk
+          echo "APK_NAME=FlClash-${VERSION}-arm64.apk" >> $GITHUB_ENV
+          echo "APK_VERSION=${VERSION}" >> $GITHUB_ENV
+
+      # ── 13. Upload artifact (সব build-এ) ─────────────────────────────────
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-arm64
-          path: build/app/outputs/flutter-apk/app-arm64-release.apk
+          name: ${{ env.APK_NAME }}
+          path: dist/${{ env.APK_NAME }}
+          retention-days: 14
+
+      # ── 14. GitHub Release (শুধু tag push-এ) ─────────────────────────────
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: FlClash ${{ env.APK_VERSION }}
+          draft: false
+          prerelease: false
+          files: dist/${{ env.APK_NAME }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
