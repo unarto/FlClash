@@ -1,0 +1,162 @@
+name: Build Android ARM64
+
+on:
+  push:
+    branches: [ main, master ]
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # ম্যানুয়ালি রান করার জন্য
+    inputs:
+      env:
+        description: 'Build environment'
+        required: false
+        default: 'pre'
+        type: choice
+        options:
+          - pre
+          - stable
+
+jobs:
+  build-android-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 0
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.16.0'
+        channel: 'stable'
+        cache: true
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+        cache: true
+
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r26c
+        add-to-path: true
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Cache Flutter dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          .pub-cache
+          build/
+          .gradle/
+        key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-flutter-
+
+    - name: Cache Go dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: ${{ runner.os }}-go-${{ hashFiles('core/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Install Flutter dependencies
+      run: |
+        flutter pub get
+        flutter clean
+
+    - name: Setup Flutter Distributor
+      run: |
+        cd plugins/flutter_distributor/packages/flutter_distributor
+        flutter clean
+        flutter pub get
+        dart pub global activate -s path .
+
+    - name: Build Clash Core for Android ARM64
+      run: |
+        dart run setup.dart android --arch arm64 --out app --env ${{ github.event.inputs.env || 'pre' }}
+      env:
+        ANDROID_NDK: ${{ env.ANDROID_NDK_HOME }}
+        GO111MODULE: on
+        GOPROXY: https://proxy.golang.org,direct
+
+    - name: List build artifacts
+      run: |
+        echo "Build artifacts:"
+        find dist -name "*.apk" -type f || echo "No APK found"
+        ls -la dist/ || echo "Dist directory not found"
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: FlClash-Android-ARM64-${{ github.run_number }}
+        path: |
+          dist/**/*.apk
+          dist/**/*.apk.sha256
+        if-no-files-found: warn
+        retention-days: 30
+
+    - name: Get APK path for release
+      id: apk_path
+      run: |
+        APK_FILE=$(find dist -name "*.apk" -type f | head -n 1)
+        if [ -n "$APK_FILE" ]; then
+          echo "apk_path=$APK_FILE" >> $GITHUB_OUTPUT
+          echo "APK found: $APK_FILE"
+        else
+          echo "No APK found"
+        fi
+
+    - name: Create Release
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: nightly-android-arm64-${{ github.run_number }}
+        name: Nightly Android ARM64 Build #{{ github.run_number }}
+        body: |
+          ## 🔨 Android ARM64 Build
+          - Commit: ${{ github.sha }}
+          - Build Date: ${{ github.event.head_commit.timestamp }}
+          - Environment: ${{ github.event.inputs.env || 'pre' }}
+          - Architecture: ARM64
+        files: |
+          ${{ steps.apk_path.outputs.apk_path }}
+          dist/**/*.sha256
+        draft: false
+        prerelease: true
+      continue-on-error: true
+
+    - name: Upload to GitHub Release (Latest)
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      uses: ncipollo/release-action@v1
+      with:
+        tag: latest-android-arm64
+        name: Latest Android ARM64 Build
+        body: |
+          ## 🚀 Latest Android ARM64 Build
+          Latest development build for Android ARM64 architecture.
+          - Commit: ${{ github.sha }}
+          - Build Date: ${{ github.event.head_commit.timestamp }}
+        artifacts: ${{ steps.apk_path.outputs.apk_path }}
+        allowUpdates: true
+        omitBodyDuringUpdate: false
+        omitNameDuringUpdate: false
+        prerelease: true
+      continue-on-error: true
