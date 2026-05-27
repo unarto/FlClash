@@ -126,6 +126,13 @@ jobs:
           ls -lh ../libclash/android/arm64-v8a/
 
       # ── 9. Flutter pub get + code generation ─────────────────────────────
+      # material_color_utilities: Flutter master pins 0.13.0 কিন্তু pubspec-এ ^0.11.1
+      # তাই pub get এর আগে constraint আপডেট করতে হবে
+      - name: Fix material_color_utilities constraint
+        run: |
+          sed -i 's/material_color_utilities: ^0.11.1/material_color_utilities: ^0.13.0/' pubspec.yaml
+          grep material_color_utilities pubspec.yaml
+
       - name: Flutter pub get
         run: flutter pub get
 
