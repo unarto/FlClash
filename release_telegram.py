@@ -6,7 +6,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TAG = os.getenv("TAG")
 RUN_ID = os.getenv("RUN_ID")
 
-IS_STABLE = "-" not in TAG
+IS_STABLE = TAG is not None and "-" not in TAG
 
 CHAT_ID = "@FlClash"
 API_URL = f"http://localhost:8081/bot{TELEGRAM_BOT_TOKEN}/sendMediaGroup"
@@ -23,6 +23,7 @@ i = 1
 
 releaseKeywords = [
     "windows-amd64-setup",
+    "windows-arm64-setup",
     "android-arm64",
     "macos-arm64",
     "macos-amd64"

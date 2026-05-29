@@ -70,9 +70,20 @@ jobs:
           Add-Content $env:GITHUB_PATH $cargoPath
 
       - name: Checkout
+        if: ${{ !startsWith(matrix.os, 'windows-11-arm') }}
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Checkout (Windows ARM)
+        if: startsWith(matrix.os, 'windows-11-arm')
+        uses: actions/checkout@v4
+
+      - name: Setup submodules (Windows ARM)
+        if: startsWith(matrix.os, 'windows-11-arm')
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive
 
       - name: Setup Android Signing
         if: startsWith(matrix.platform,'android')
