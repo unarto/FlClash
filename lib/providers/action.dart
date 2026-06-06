@@ -1,3 +1,5 @@
+import 'package:fl_clash/features/license/license_provider.dart';
+import 'package:fl_clash/views/license/activation_screen.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -182,6 +184,18 @@ class SetupAction extends _$SetupAction {
 
   Future<void> updateStatus(bool isStart, {bool isInit = false}) async {
     if (isStart) {
+    // â”€â”€â”€ FlClash-BD license gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    final canStart = ref.read(canStartTunnelProvider);
+    if (!canStart) {
+      await ref
+          .read(licenseStateProvider.notifier)
+          .revalidateIfNeeded();
+      if (!ref.read(canStartTunnelProvider)) {
+        await _routeToActivation();
+        return;
+      }
+    }
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       if (!isInit) {
         final res = await ref
             .read(coreActionProvider.notifier)
@@ -971,5 +985,13 @@ class ProfilesAction extends _$ProfilesAction {
       await profileFile.safeDelete(recursive: true);
     }
     await coreController.deleteFile(providersDirPath);
+  }
+
+  Future<void> _routeToActivation() async {
+    final ctx = globalState.navigatorKey.currentContext;
+    if (ctx == null) return;
+    await Navigator.of(ctx).push(
+      MaterialPageRoute(builder: (_) => const ActivationScreen()),
+    );
   }
 }
