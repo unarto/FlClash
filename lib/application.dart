@@ -139,6 +139,8 @@ class ApplicationState extends ConsumerState<Application> {
         );
         final themeProps = ref.watch(themeSettingProvider);
         return MaterialApp(
+      locale: const Locale('en'),
+      localeResolutionCallback: (_, __) => const Locale('en'),
           debugShowCheckedModeBanner: false,
           navigatorKey: globalState.navigatorKey,
           localizationsDelegates: const [

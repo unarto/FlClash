@@ -1,3 +1,4 @@
+import 'package:fl_clash/features/license/license_provider.dart';
 import 'dart:async';
 
 import 'package:fl_clash/common/common.dart';
