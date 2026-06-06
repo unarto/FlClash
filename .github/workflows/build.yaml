@@ -230,7 +230,14 @@ jobs:
             git log --no-merges --pretty=format:"%B" "$range" | \
             awk '!/Update changelog/ && NF {print "- " $0 "\n"}' >> "$out"
           done
+      - name: Attest build provenance
+        if: ${{ env.IS_STABLE == 'true' }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: './dist/*'
+
       - name: Push to telegram
+        continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TAG: ${{ github.ref_name }}
@@ -244,12 +251,6 @@ jobs:
         run: |
           version=$(echo "${{ github.ref_name }}" | sed 's/^v//')
           sed "s|VERSION|$version|g" ./.github/release_template.md >> release.md
-
-      - name: Attest build provenance
-        if: ${{ env.IS_STABLE == 'true' }}
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: './dist/*'
 
       - name: Generate sha256
         if: ${{ env.IS_STABLE == 'true' }}
