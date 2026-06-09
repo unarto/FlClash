@@ -11,9 +11,6 @@ on:
     tags:
       - "v*"
 
-env:
-  IS_STABLE: ${{ !contains(github.ref, '-') }}
-
 permissions:
   contents: write
 
@@ -154,7 +151,6 @@ jobs:
           path: ${{ steps.vars.outputs.apk_name }}
 
       - name: Publish GitHub Release
-        if: ${{ env.IS_STABLE == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
