@@ -1,132 +1,128 @@
-<div>
+# SlClash
 
-[**简体中文**](README_zh_CN.md)
+SlClash 是基于 FlClash 私有裁剪和重设计的 Android 代理客户端，面向自用移动端场景。项目保留 Clash Meta 内核能力、订阅管理、代理组选择、Provider 同步、流量与连接状态展示，并围绕 Android 手机端重新整理了界面与发布流程。
 
-</div>
+## 项目定位
 
-## FlClash
+- 仅支持 Android。
+- 仅支持 `arm64-v8a` ABI。
+- 不包含桌面端、系统托盘、桌面热键、桌面系统代理、Rust IPC、分发器打包等能力。
+- Go core 以 Android shared library 方式集成，Flutter 通过 Android 原生服务与 FFI 相关接口调用。
 
-[![Downloads](https://img.shields.io/github/downloads/chen08209/FlClash/total?style=flat-square&logo=github)](https://github.com/chen08209/FlClash/releases/)[![Last Version](https://img.shields.io/github/release/chen08209/FlClash/all.svg?style=flat-square)](https://github.com/chen08209/FlClash/releases/)[![License](https://img.shields.io/github/license/chen08209/FlClash?style=flat-square)](LICENSE)
+## 当前特性
 
-[![Channel](https://img.shields.io/badge/Telegram-Channel-blue?style=flat-square&logo=telegram)](https://t.me/FlClash)
+- Surge-like 移动端首页，展示当前订阅、连接状态、流量、速率和网络概览。
+- 代理页固定列表模式，支持代理组展开、当前节点选择、单节点延迟测试和整组延迟测试。
+- 配置页支持当前订阅展开查看全部节点，并可一键测试当前订阅全部节点延迟。
+- Provider 页支持批量同步、单个同步和本地上传。
+- 订阅管理使用底部 sheet，支持二维码、文件、URL 添加和拖动排序。
+- Android release 通过 GitHub Actions 构建 `arm64-v8a` split APK 并发布到 GitHub Release。
 
-A multi-platform proxy client based on ClashMeta, simple and easy to use, open-source and ad-free.
+## 目录结构
 
-on Desktop:
-<p style="text-align: center;">
-    <img alt="desktop" src="snapshots/desktop.gif">
-</p>
+| 路径 | 说明 |
+| --- | --- |
+| `lib/` | Flutter 应用代码 |
+| `android/` | Android 原生工程 |
+| `core/` | Go core wrapper 与 Clash.Meta 子模块 |
+| `libclash/android/arm64-v8a/` | Android arm64 Go shared library 输出 |
+| `plugins/setup/` | 本地 Flutter plugin build hook，用于 Go core 构建 |
+| `plugins/wifi_ssid/` | Android Wi-Fi SSID 插件 |
 
-on Mobile:
-<p style="text-align: center;">
-    <img alt="mobile" src="snapshots/mobile.gif">
-</p>
+## 本地环境
 
-## Features
+本仓库使用本地 SDK 和仓库内缓存目录：
 
-✈️ Multi-platform: Android, Windows, macOS and Linux
+| 工具 | 路径 |
+| --- | --- |
+| Flutter SDK | `D:\Code\Tools\flutter` |
+| Go SDK | `D:\Code\Tools\Go\go` |
+| Android SDK | `D:\Code\Tools\Android\Sdk` |
+| Android NDK | `D:\Code\Tools\Android\Sdk\ndk\28.2.13676358` |
+| ADB | `D:\Code\Tools\Android\Sdk\platform-tools\adb.exe` |
 
-💻 Adaptive multiple screen sizes, Multiple color themes available
+构建前加载环境：
 
-💡 Based on Material You Design, [Surfboard](https://github.com/getsurfboard/surfboard)-like UI
+```powershell
+dev-env.bat
+```
 
-☁️ Supports data sync via WebDAV
+或在 WSL 中：
 
-✨ Support subscription link, Dark mode
+```bash
+source dev-env.sh
+```
 
-## Use
+## 常用命令
 
-### Linux
+```powershell
+flutter pub get
+flutter analyze --no-fatal-infos
+flutter test
+flutter build apk --debug --target-platform android-arm64
+flutter build apk --release --target-platform android-arm64
+```
 
-⚠️ Make sure to install the following dependencies before using them
+本地 debug 构建并安装：
 
-   ```bash
-    sudo apt-get install libayatana-appindicator3-dev
-    sudo apt-get install libkeybinder-3.0-dev
-   ```
+```powershell
+cmd /c "cd /d D:\Code\Clash myself\FlClash-dev && set JAVA_HOME=D:\Code\Tools\Java\jdk-21.0.11+10&& call dev-env.bat && D:\Code\Tools\flutter\bin\flutter.bat build apk --debug --target-platform android-arm64 && D:\Code\Tools\Android\Sdk\platform-tools\adb.exe install -r build\app\outputs\flutter-apk\app-debug.apk"
+```
 
-### Android
+## Go Core 构建
 
-Support the following actions
+Android 构建会调用 `plugins/setup/buildkit/gradle/plugin.gradle`，再运行 `plugins/setup/buildkit/build_tool/` 下的 Dart 构建工具。
 
-   ```bash
-    com.follow.clash.action.START
-    
-    com.follow.clash.action.STOP
-    
-    com.follow.clash.action.TOGGLE
-   ```
+当前只支持：
 
-## Download
+```powershell
+dart run build_tool android
+dart run build_tool android --arch arm64
+dart run build_tool android --target-platform android-arm64
+```
 
-<a href="https://chen08209.github.io/FlClash-fdroid-repo/repo?fingerprint=789D6D32668712EF7672F9E58DEEB15FBD6DCEEC5AE7A4371EA72F2AAE8A12FD"><img alt="Get it on F-Droid" src="snapshots/get-it-on-fdroid.svg" width="200px"/></a> <a href="https://github.com/chen08209/FlClash/releases"><img alt="Get it on GitHub" src="snapshots/get-it-on-github.svg" width="200px"/></a>
+构建产物会写入：
 
-## Build
+- `libclash/android/arm64-v8a/libclash.so`
+- `android/core/src/main/jniLibs/arm64-v8a/libclash.so`
+- `android/core/src/main/cpp/includes/arm64-v8a/`
 
-1. Update submodules
-   ```bash
-   git submodule update --init --recursive
-   ```
+## 代码生成
 
-2. Install `Flutter` and `Golang` environment
+修改 Freezed/JSON model、Riverpod provider 或 Drift schema 后运行：
 
-3. Build Application
+```powershell
+dart run build_runner build --delete-conflicting-outputs
+```
 
-    - android
+## 发布
 
-        1. Install `Android SDK`, `Android NDK`
+推送形如 `v1.1.0` 的 tag 会触发 `.github/workflows/slclash-android-release.yml`。
 
-        2. Set `ANDROID_NDK` environment variable
+Workflow 会执行：
 
-        3. Run build script
+- 安装 Flutter、Go、JDK、Android NDK。
+- 运行 `flutter analyze --no-fatal-infos`。
+- 构建 Android `arm64-v8a` release split APK。
+- 上传 workflow artifact。
+- 发布 GitHub Release。
 
-           ```bash
-           dart setup.dart android
-           ```
+Release APK 命名格式：
 
-    - windows
+```text
+SlClash-vX.Y.Z-arm64-v8a.apk
+```
 
-        1. Requires a Windows client
+最新发布可在 [GitHub Releases](https://github.com/songzhengpei/Slclash/releases) 查看。
 
-        2. Install `GCC`, `Inno Setup`
+## 维护说明
 
-        3. Run build script
+- `.dev-tools/` 存放本地构建缓存，应保留。
+- `plugins/setup/` 仍是 Android Go core 构建链路的一部分，应保留。
+- `plugins/wifi_ssid/` 提供 Android Wi-Fi SSID 能力，应保留。
+- `core/Clash.Meta` 是内核子模块，应保留。
+- 不要重新引入桌面平台目录或非 `arm64-v8a` ABI，除非项目目标发生变化。
 
-           ```bash
-           dart setup.dart windows
-           ```
+## 致谢
 
-    - linux
-
-        1. Requires a Linux client
-
-        2. Dependencies are auto-installed by setup script, or manually:
-           ```bash
-           sudo apt-get install -y libayatana-appindicator3-dev libkeybinder-3.0-dev
-           ```
-
-        3. Run build script
-
-           ```bash
-           dart setup.dart linux
-           ```
-
-    - macOS
-
-        1. Requires a macOS client
-
-        2. Run build script
-
-           ```bash
-           dart setup.dart macos
-           ```
-
-## Star
-
-The easiest way to support developers is to click on the star (⭐) at the top of the page.
-
-<p style="text-align: center;">
-    <a href="https://api.star-history.com/svg?repos=chen08209/FlClash&Date">
-        <img alt="start" width=50% src="https://api.star-history.com/svg?repos=chen08209/FlClash&Date"/>
-    </a>
-</p>
+本项目基于 FlClash 和 Clash.Meta 生态裁剪、适配与重设计。当前仓库是面向自用 Android 设备的私有发布线。
