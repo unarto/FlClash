@@ -1024,5 +1024,6 @@ class MessageLookup extends MessageLookupByLibrary {
     "whitelistMode": MessageLookupByLibrary.simpleMessage("Whitelist mode"),
     "yearsAgo": m19,
     "zh_CN": MessageLookupByLibrary.simpleMessage("Simplified Chinese"),
+    "fa": MessageLookupByLibrary.simpleMessage("Persian"),
   };
 }
