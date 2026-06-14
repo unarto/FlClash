@@ -196,6 +196,52 @@ function patchHvigorConfigForUpstreamWrapper() {
   };
 }
 
+function resolveFlutterNativeHar(flutterSdk) {
+  const candidates = [
+    path.join(
+        flutterSdk,
+        'bin',
+        'cache',
+        'artifacts',
+        'engine',
+        'ohos-arm64-release',
+        'arm64_v8a_release.har',
+    ),
+    path.join(
+        flutterSdk,
+        'bin',
+        'cache',
+        'artifacts',
+        'engine',
+        'ohos-arm64-profile',
+        'arm64_v8a_profile.har',
+    ),
+    path.join(
+        flutterSdk,
+        'bin',
+        'cache',
+        'artifacts',
+        'engine',
+        'ohos-arm64',
+        'arm64_v8a_debug.har',
+    ),
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || '';
+}
+
+function ensureFlutterNativeHar(appHome, flutterSdk) {
+  const nativeHar = resolveFlutterNativeHar(flutterSdk);
+  if (!nativeHar) {
+    return;
+  }
+
+  const targetHarDir = path.join(appHome, 'har');
+  const targetHarPath = path.join(targetHarDir, 'flutter_native_arm64_v8a.har');
+  fs.mkdirSync(targetHarDir, {recursive: true});
+  fs.copyFileSync(nativeHar, targetHarPath);
+}
+
 const upstreamWrapperPath = path.join(
     path.resolve(flutterSdk),
     'engine',
@@ -225,6 +271,7 @@ prepareOpenHarmonySigningAssets({
   bundleName: 'com.follow.clash',
 });
 
+ensureFlutterNativeHar(appHome, flutterSdk);
 prepareBundledHvigorWorkspace();
 prepareNodePath();
 const restoreFs = patchHvigorConfigForUpstreamWrapper();

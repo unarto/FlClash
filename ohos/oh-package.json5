@@ -20,6 +20,6 @@
     "rust_api": "file:./har/rust_api.har",
     "proxy": "file:./har/proxy.har",
     "@ohos/flutter_module": "file:./entry",
-    "flutter_native_arm64_v8a": "file:/private/tmp/flutter_ohos_3357/bin/cache/artifacts/engine/ohos-arm64-release/arm64_v8a_release.har"
+    "flutter_native_arm64_v8a": "file:./har/flutter_native_arm64_v8a.har"
   }
 }

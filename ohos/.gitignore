@@ -1,6 +1,8 @@
 /node_modules
 /oh_modules
 /local.properties
+/package-lock.json
+/dta
 /.idea
 **/build
 /.hvigor
