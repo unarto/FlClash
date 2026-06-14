@@ -137,6 +137,12 @@ Support the following actions
            dart setup.dart ohos
            ```
 
+        4. Smoke-test install and launch on a HarmonyOS emulator:
+
+           ```bash
+           bash scripts/ohos/install_and_launch.sh
+           ```
+
 ## Star
 
 The easiest way to support developers is to click on the star (⭐) at the top of the page.

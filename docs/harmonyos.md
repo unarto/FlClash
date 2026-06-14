@@ -109,6 +109,42 @@ The release-style artifact copied by `setup.dart` is:
 dist/FlClash-<version>-ohos-arm64.hap
 ```
 
+## Emulator install smoke test
+
+Once the HAP has been built, verify packaging on a HarmonyOS emulator before treating it as a releasable artifact.
+
+Prerequisites:
+
+1. Start a HarmonyOS emulator or connect a test device
+2. Ensure `hdc list targets` shows exactly one target, or set `HDC_TARGET=<target>`
+3. Keep the generated HAP at `dist/FlClash-<version>-ohos-arm64.hap`
+
+Run the repository smoke test:
+
+```bash
+bash scripts/ohos/install_and_launch.sh
+```
+
+Or pass an explicit artifact path:
+
+```bash
+bash scripts/ohos/install_and_launch.sh dist/FlClash-<version>-ohos-arm64.hap
+```
+
+What this verifies today:
+
+- the signed HAP can be installed with `hdc install -r`
+- the entry ability can be started with `aa start`
+- the package is usable as an installable host scaffold on an emulator
+
+What a passing result means on the current branch:
+
+- install succeeds
+- launch succeeds
+- the app reaches the in-app unsupported-runtime error screen
+
+This is intentionally weaker than a real product smoke test. The current branch still does **not** provide a working OHOS runtime, so the expected result is installable packaging plus a controlled startup failure, not functional proxy behavior.
+
 During the build, `ohos/hvigor/hvigor-wrapper.js` prepares these generated signing assets under `ohos/hvigor/.signing/openharmony/`:
 
 - `OpenHarmonyApplicationRelease.cer`
