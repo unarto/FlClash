@@ -118,7 +118,7 @@ main() {
   run_hdc "$target" install -r "$hap_path"
 
   echo "Launching ${bundle_name}/${ability_name}"
-  run_hdc "$target" shell aa start -a "$ability_name" -b "$bundle_name"
+  run_hdc "$target" shell "aa start -a $ability_name -b $bundle_name"
 
   cat <<EOF
 Install and launch commands completed.

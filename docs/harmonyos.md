@@ -118,6 +118,7 @@ Prerequisites:
 1. Start a HarmonyOS emulator or connect a test device
 2. Ensure `hdc list targets` shows exactly one target, or set `HDC_TARGET=<target>`
 3. Keep the generated HAP at `dist/FlClash-<version>-ohos-arm64.hap`
+4. This script does not start an emulator for you; it only validates install and launch against an existing target
 
 Run the repository smoke test:
 
