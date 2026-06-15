@@ -11,7 +11,7 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
   const SurgeNetworkOverviewCard({super.key});
 
   static const _cardRadius = 26.0;
-  static const _inactiveUploadColor = Color(0xFF6F706C);
+  static const _inactiveUploadColor = Color(0xFF858681);
   static const _inactiveDownloadColor = Color(0xFFA5A6A1);
 
   bool _isChinese(BuildContext context) {
@@ -76,6 +76,8 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
     );
     final uploadColor = isStart ? surge.primary : _inactiveUploadColor;
     final downloadColor = isStart ? surge.green : _inactiveDownloadColor;
+    final lineFillStartAlpha = isStart ? 0.16 : 1.0;
+    final lineFillEndAlpha = isStart ? 0.03 : 0.08;
 
     return Container(
       width: double.infinity,
@@ -105,7 +107,7 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
                   alignment: Alignment.topLeft,
                   child: Icon(
                     Icons.public_rounded,
-                    color: surge.primary,
+                    color: isStart ? surge.primary : _inactiveUploadColor,
                     size: 18,
                   ),
                 ),
@@ -155,9 +157,11 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
               children: [
                 Positioned.fill(
                   child: LineChart(
-                    points: downloadPoints,
-                    color: downloadColor,
+                    points: uploadPoints,
+                    color: uploadColor,
                     gradient: true,
+                    gradientStartAlpha: lineFillStartAlpha,
+                    gradientEndAlpha: lineFillEndAlpha,
                     duration: commonDuration,
                     minY: hasLiveTraffic ? null : 0,
                     maxY: hasLiveTraffic ? null : 0.2,
@@ -165,9 +169,11 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
                 ),
                 Positioned.fill(
                   child: LineChart(
-                    points: uploadPoints,
-                    color: uploadColor,
+                    points: downloadPoints,
+                    color: downloadColor,
                     gradient: true,
+                    gradientStartAlpha: lineFillStartAlpha,
+                    gradientEndAlpha: lineFillEndAlpha,
                     duration: commonDuration,
                     minY: hasLiveTraffic ? null : 0,
                     maxY: hasLiveTraffic ? null : 0.2,

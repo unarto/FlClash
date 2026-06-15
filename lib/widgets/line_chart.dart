@@ -16,6 +16,8 @@ class LineChart extends StatefulWidget {
   final bool gradient;
   final double? minY;
   final double? maxY;
+  final double gradientStartAlpha;
+  final double gradientEndAlpha;
 
   const LineChart({
     super.key,
@@ -25,6 +27,8 @@ class LineChart extends StatefulWidget {
     this.duration = Duration.zero,
     this.minY,
     this.maxY,
+    this.gradientStartAlpha = 0.16,
+    this.gradientEndAlpha = 0.03,
   });
 
   @override
@@ -104,6 +108,8 @@ class _LineChartState extends State<LineChart>
                 progress: _controller.value,
                 gradient: widget.gradient,
                 color: widget.color,
+                gradientStartAlpha: widget.gradientStartAlpha,
+                gradientEndAlpha: widget.gradientEndAlpha,
               ),
               child: SizedBox(
                 height: container.maxHeight,
@@ -123,6 +129,8 @@ class LineChartPainter extends CustomPainter {
   final double progress;
   final Color color;
   final bool gradient;
+  final double gradientStartAlpha;
+  final double gradientEndAlpha;
 
   late final Paint _strokePaint;
   late final Paint _fillPaint;
@@ -130,6 +138,8 @@ class LineChartPainter extends CustomPainter {
   Shader? _cachedShader;
   Size? _cachedShaderSize;
   Color? _cachedShaderColor;
+  double? _cachedGradientStartAlpha;
+  double? _cachedGradientEndAlpha;
 
   LineChartPainter({
     required this.prevRenderPoints,
@@ -137,6 +147,8 @@ class LineChartPainter extends CustomPainter {
     required this.progress,
     required this.color,
     required this.gradient,
+    required this.gradientStartAlpha,
+    required this.gradientEndAlpha,
   }) {
     _strokePaint = Paint()
       ..color = color
@@ -205,11 +217,16 @@ class LineChartPainter extends CustomPainter {
   Shader _getShader(Size size) {
     if (_cachedShader == null ||
         _cachedShaderSize != size ||
-        _cachedShaderColor != color) {
+        _cachedShaderColor != color ||
+        _cachedGradientStartAlpha != gradientStartAlpha ||
+        _cachedGradientEndAlpha != gradientEndAlpha) {
       final gradient = LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
-        colors: [color.withValues(alpha: 0.16), color.withValues(alpha: 0.03)],
+        colors: [
+          color.withValues(alpha: gradientStartAlpha),
+          color.withValues(alpha: gradientEndAlpha),
+        ],
       );
 
       const strokeWidth = 2.0;
@@ -218,6 +235,8 @@ class LineChartPainter extends CustomPainter {
       );
       _cachedShaderSize = size;
       _cachedShaderColor = color;
+      _cachedGradientStartAlpha = gradientStartAlpha;
+      _cachedGradientEndAlpha = gradientEndAlpha;
     }
     return _cachedShader!;
   }
@@ -249,6 +268,8 @@ class LineChartPainter extends CustomPainter {
         oldDelegate.prevRenderPoints != prevRenderPoints ||
         oldDelegate.currentRenderPoints != currentRenderPoints ||
         oldDelegate.color != color ||
-        oldDelegate.gradient != gradient;
+        oldDelegate.gradient != gradient ||
+        oldDelegate.gradientStartAlpha != gradientStartAlpha ||
+        oldDelegate.gradientEndAlpha != gradientEndAlpha;
   }
 }
