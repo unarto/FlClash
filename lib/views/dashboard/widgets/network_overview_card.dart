@@ -1,6 +1,7 @@
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/app.dart';
+import 'package:fl_clash/providers/state.dart';
 import 'package:fl_clash/widgets/surge/surge.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +11,8 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
   const SurgeNetworkOverviewCard({super.key});
 
   static const _cardRadius = 26.0;
+  static const _inactiveUploadColor = Color(0xFF6F706C);
+  static const _inactiveDownloadColor = Color(0xFFA5A6A1);
 
   bool _isChinese(BuildContext context) {
     return Localizations.localeOf(context).languageCode.toLowerCase() == 'zh';
@@ -51,6 +54,7 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
     final traffics = ref.watch(trafficsProvider).list;
     final totalTraffic = ref.watch(totalTrafficProvider);
     final networkDetection = ref.watch(networkDetectionProvider);
+    final isStart = ref.watch(isStartProvider);
     final lastTraffic = traffics.isEmpty ? const Traffic() : traffics.last;
     final hasLiveTraffic = traffics.any(
       (traffic) => traffic.up > 0 || traffic.down > 0,
@@ -70,6 +74,8 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
       (traffic) => traffic.down,
       const [0.077, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077],
     );
+    final uploadColor = isStart ? surge.primary : _inactiveUploadColor;
+    final downloadColor = isStart ? surge.green : _inactiveDownloadColor;
 
     return Container(
       width: double.infinity,
@@ -137,8 +143,8 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
               _LiveSpeedBadge(
                 up: lastTraffic.up,
                 down: lastTraffic.down,
-                upColor: surge.primary,
-                downColor: surge.green,
+                upColor: uploadColor,
+                downColor: downloadColor,
               ),
             ],
           ),
@@ -150,7 +156,7 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
                 Positioned.fill(
                   child: LineChart(
                     points: downloadPoints,
-                    color: surge.green,
+                    color: downloadColor,
                     gradient: true,
                     duration: commonDuration,
                     minY: hasLiveTraffic ? null : 0,
@@ -160,7 +166,7 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
                 Positioned.fill(
                   child: LineChart(
                     points: uploadPoints,
-                    color: surge.primary,
+                    color: uploadColor,
                     gradient: true,
                     duration: commonDuration,
                     minY: hasLiveTraffic ? null : 0,
@@ -231,11 +237,11 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
                           data: [
                             DonutChartData(
                               value: totalTraffic.up.toDouble(),
-                              color: surge.primary,
+                              color: uploadColor,
                             ),
                             DonutChartData(
                               value: totalTraffic.down.toDouble(),
-                              color: surge.green,
+                              color: downloadColor,
                             ),
                           ],
                         ),
@@ -254,14 +260,14 @@ class SurgeNetworkOverviewCard extends ConsumerWidget {
                         icon: Icons.arrow_upward_rounded,
                         label: _uploadTotalLabel(context),
                         value: totalTraffic.up,
-                        color: surge.primary,
+                        color: uploadColor,
                       ),
                       const SizedBox(height: 18),
                       _TrafficLineItem(
                         icon: Icons.arrow_downward_rounded,
                         label: _downloadTotalLabel(context),
                         value: totalTraffic.down,
-                        color: surge.green,
+                        color: downloadColor,
                       ),
                     ],
                   ),
