@@ -301,13 +301,13 @@ _GeoXUrl _$GeoXUrlFromJson(Map<String, dynamic> json) => _GeoXUrl(
       'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb',
   asn:
       json['asn'] as String? ??
-      'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb',
+      'https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/GeoLite2-ASN.mmdb',
   geoip:
       json['geoip'] as String? ??
-      'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
+      'https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/geoip.dat',
   geosite:
       json['geosite'] as String? ??
-      'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
+      'https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat',
 );
 
 Map<String, dynamic> _$GeoXUrlToJson(_GeoXUrl instance) => <String, dynamic>{

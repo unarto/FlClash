@@ -317,15 +317,15 @@ abstract class GeoXUrl with _$GeoXUrl {
     )
     String mmdb,
     @Default(
-      'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb',
+      'https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/GeoLite2-ASN.mmdb',
     )
     String asn,
     @Default(
-      'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
+      'https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/geoip.dat',
     )
     String geoip,
     @Default(
-      'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
+      'https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat',
     )
     String geosite,
   }) = _GeoXUrl;
