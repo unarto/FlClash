@@ -16,27 +16,52 @@ class ScanPage extends StatefulWidget {
 }
 
 class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
-  MobileScannerController controller = MobileScannerController(
-    detectionSpeed: DetectionSpeed.noDuplicates,
+  // 1. 改变检测速度为默认或正常，允许连续识别
+  final MobileScannerController controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.normal, 
     formats: const [BarcodeFormat.qrCode],
   );
 
   StreamSubscription<Object?>? _subscription;
+  bool _isPopping = false; // 防止多次重复触发 pop
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _startScanning();
+  }
+
+  // 提取启动和监听逻辑，避免重复写
+  void _startScanning() {
+    if (_subscription != null) return; // 确保不重复监听
     _subscription = controller.barcodes.listen(_handleBarcode);
     unawaited(controller.start());
   }
 
+  void _stopScanning() {
+    unawaited(_subscription?.cancel());
+    _subscription = null;
+    unawaited(controller.stop());
+  }
+
   void _handleBarcode(BarcodeCapture barcodeCapture) {
+    if (_isPopping || barcodeCapture.barcodes.isEmpty) return;
+    
     final barcode = barcodeCapture.barcodes.first;
-    if (barcode.type == BarcodeType.url) {
-      Navigator.pop<String>(context, barcode.rawValue);
+    final rawValue = barcode.rawValue;
+    
+    if (rawValue == null || rawValue.isEmpty) return;
+
+    _isPopping = true; // 锁死状态，防止重复 pop
+    
+    // 很多二维码内容并不是标准的 URL 格式（可能只是普通字符串）
+    // 如果你只需要拿到二维码里的文本，直接返回原始值即可，不用强求 BarcodeType.url
+    if (barcode.type == BarcodeType.url || rawValue.startsWith('http')) {
+      Navigator.pop<String>(context, rawValue);
     } else {
-      Navigator.pop(context);
+      // 如果不是 URL，也返回原始文本，由调用方决定怎么处理
+      Navigator.pop<String>(context, rawValue);
     }
   }
 
@@ -47,15 +72,13 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
       case AppLifecycleState.detached:
       case AppLifecycleState.hidden:
       case AppLifecycleState.paused:
-        return;
+        break;
       case AppLifecycleState.resumed:
-        _subscription = controller.barcodes.listen(_handleBarcode);
-
-        unawaited(controller.start());
+        _startScanning(); // 使用封装好的安全启动
+        break;
       case AppLifecycleState.inactive:
-        unawaited(_subscription?.cancel());
-        _subscription = null;
-        unawaited(controller.stop());
+        _stopScanning(); // 使用封装好的安全停止
+        break;
     }
   }
 
@@ -154,8 +177,7 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
   @override
   Future<void> dispose() async {
     WidgetsBinding.instance.removeObserver(this);
-    unawaited(_subscription?.cancel());
-    _subscription = null;
+    _stopScanning();
     await controller.dispose();
     super.dispose();
   }
