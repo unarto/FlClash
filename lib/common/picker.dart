@@ -34,7 +34,7 @@ class Picker {
     if (!await localFile.exists()) {
       await localFile.create(recursive: true);
     }
-    final bytes = Platform.isAndroid ? await localFile.readAsBytes() : null;
+    final bytes = Platform.isAndroid ? await localFile.readAsBytes() : [];
     final path = await FilePicker.saveFile(
       fileName: fileName,
       initialDirectory: await appPath.downloadDirPath,
