@@ -120,7 +120,7 @@ Future<void> delayTest(List<Proxy> proxies, [String? testUrl]) async {
   final batches = proxies.batch(batchSize);
   for (final batch in batches) {
     await Future.wait(
-      batch.map((proxy) => proxyDelayTest(proxy, testUrl, !system.isOhos)),
+      batch.map((proxy) => proxyDelayTest(proxy, testUrl)),
       eagerError: false,
     );
     if (system.isOhos) {
