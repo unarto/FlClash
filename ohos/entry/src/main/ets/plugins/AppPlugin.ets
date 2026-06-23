@@ -18,6 +18,7 @@ import {
 
 interface NativeBridge {
   invokeCore(action: string): string;
+  invokeCoreAsync(action: string): Promise<string>;
   consumeCoreEvents(): string;
   chmodPath(path: string): boolean;
   probeCreateNativeChildProcess(): number;
@@ -341,21 +342,23 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
       case 'invokeCore': {
         const args = call.args as Map<string, string> | null;
         const action = args?.get('action') ?? '';
-        try {
-          const response = nativeBridge.invokeCore(action);
-          if (!response) {
-            console.error(
-              `[AppPlugin] invokeCore empty result, lastError=${nativeBridge.lastError()}`,
+        void (async () => {
+          try {
+            const response = await nativeBridge.invokeCoreAsync(action);
+            if (!response) {
+              console.error(
+                `[AppPlugin] invokeCore empty result, lastError=${nativeBridge.lastError()}`,
+              );
+            }
+            result.success(response);
+          } catch (error) {
+            result.error(
+              'CORE_INVOKE_FAILED',
+              `${error}`,
+              nativeBridge.lastError(),
             );
           }
-          result.success(response);
-        } catch (error) {
-          result.error(
-            'CORE_INVOKE_FAILED',
-            `${error}`,
-            nativeBridge.lastError(),
-          );
-        }
+        })();
         return;
       }
       case 'consumeCoreEvents': {

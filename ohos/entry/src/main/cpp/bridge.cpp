@@ -376,28 +376,16 @@ napi_value CreateInt32(napi_env env, int32_t value) {
   return result;
 }
 
-napi_value InvokeCore(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value args[1] = {nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  if (argc < 1) {
-    return CreateString(env, "");
-  }
-  size_t action_length = 0;
-  napi_get_value_string_utf8(env, args[0], nullptr, 0, &action_length);
-  std::string action(action_length, '\0');
-  napi_get_value_string_utf8(
-      env, args[0], &action[0], action_length + 1, &action_length);
-
+std::string InvokeCoreBlocking(const std::string &action) {
   if (!EnsureCoreLoaded()) {
-    return CreateString(env, "");
+    return "";
   }
 
   const auto id = ExtractJsonStringField(action, "id");
   if (id.empty()) {
     std::lock_guard<std::mutex> lock(g_state_mutex);
     SetError("missing action id in invokeCore payload");
-    return CreateString(env, "");
+    return "";
   }
   const auto method = ExtractJsonStringField(action, "method");
   if (IsDetachedActionMethod(method)) {
@@ -407,7 +395,7 @@ napi_value InvokeCore(napi_env env, napi_callback_info info) {
       g_detached_ids.insert(id);
     }
     g_invoke_action(reinterpret_cast<void *>(&ResultCallback), action.c_str());
-    return CreateString(env, BuildImmediateSuccessResult(method, id));
+    return BuildImmediateSuccessResult(method, id);
   }
 
   auto pending_result = std::make_shared<PendingResult>();
@@ -432,11 +420,90 @@ napi_value InvokeCore(napi_env env, napi_callback_info info) {
     g_pending_results.erase(id);
     if (!completed) {
       SetError("invokeCore timeout: " + id);
-      return CreateString(env, "");
+      return "";
     }
   }
 
-  return CreateString(env, payload);
+  return payload;
+}
+
+std::string ReadStringArg(napi_env env, napi_value arg) {
+  size_t length = 0;
+  napi_get_value_string_utf8(env, arg, nullptr, 0, &length);
+  if (length == 0) {
+    return "";
+  }
+  std::string value(length, '\0');
+  napi_get_value_string_utf8(env, arg, &value[0], length + 1, &length);
+  return value;
+}
+
+napi_value InvokeCore(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 1) {
+    return CreateString(env, "");
+  }
+  return CreateString(env, InvokeCoreBlocking(ReadStringArg(env, args[0])));
+}
+
+struct AsyncInvokeCoreContext {
+  napi_env env = nullptr;
+  napi_deferred deferred = nullptr;
+  napi_async_work work = nullptr;
+  std::string action;
+  std::string result;
+};
+
+void ExecuteInvokeCore(napi_env env, void *data) {
+  auto *context = static_cast<AsyncInvokeCoreContext *>(data);
+  context->result = InvokeCoreBlocking(context->action);
+}
+
+void CompleteInvokeCore(napi_env env, napi_status status, void *data) {
+  auto *context = static_cast<AsyncInvokeCoreContext *>(data);
+  napi_value result = CreateString(env, context->result);
+  napi_resolve_deferred(env, context->deferred, result);
+  napi_delete_async_work(env, context->work);
+  delete context;
+}
+
+napi_value InvokeCoreAsync(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+  napi_deferred deferred = nullptr;
+  napi_value promise = nullptr;
+  napi_create_promise(env, &deferred, &promise);
+  if (argc < 1) {
+    napi_resolve_deferred(env, deferred, CreateString(env, ""));
+    return promise;
+  }
+
+  auto *context = new AsyncInvokeCoreContext();
+  context->env = env;
+  context->deferred = deferred;
+  context->action = ReadStringArg(env, args[0]);
+
+  napi_value resource_name = CreateString(env, "InvokeCoreAsync");
+  const napi_status create_status = napi_create_async_work(
+      env, nullptr, resource_name, ExecuteInvokeCore, CompleteInvokeCore,
+      context, &context->work);
+  if (create_status != napi_ok) {
+    delete context;
+    napi_resolve_deferred(env, deferred, CreateString(env, ""));
+    return promise;
+  }
+  const napi_status queue_status = napi_queue_async_work(env, context->work);
+  if (queue_status != napi_ok) {
+    napi_delete_async_work(env, context->work);
+    delete context;
+    napi_resolve_deferred(env, deferred, CreateString(env, ""));
+    return promise;
+  }
+  return promise;
 }
 
 napi_value ChmodPath(napi_env env, napi_callback_info info) {
@@ -753,6 +820,8 @@ EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
   napi_property_descriptor desc[] = {
       {"invokeCore", nullptr, InvokeCore, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"invokeCoreAsync", nullptr, InvokeCoreAsync, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"consumeCoreEvents", nullptr, ConsumeCoreEvents, nullptr, nullptr,
        nullptr, napi_default, nullptr},
