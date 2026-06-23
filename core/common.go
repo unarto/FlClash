@@ -243,9 +243,32 @@ func applyConfig(params *SetupParams) error {
 	defer runLock.Unlock()
 	var err error
 	constant.DefaultTestURL = params.TestURL
-	currentConfig, err = executor.ParseWithPath(filepath.Join(constant.Path.HomeDir(), "config.yaml"))
+	configPath := filepath.Join(constant.Path.HomeDir(), "config.yaml")
+	if fileInfo, statErr := os.Stat(configPath); statErr != nil {
+		debugCoreLog("applyConfig configPath=%s statErr=%v", configPath, statErr)
+	} else {
+		debugCoreLog(
+			"applyConfig configPath=%s size=%d mode=%s",
+			configPath,
+			fileInfo.Size(),
+			fileInfo.Mode(),
+		)
+	}
+	currentConfig, err = executor.ParseWithPath(configPath)
 	if err != nil {
+		debugCoreLog("applyConfig parse failed configPath=%s err=%v", configPath, err)
 		currentConfig, _ = config.ParseRawConfig(config.DefaultRawConfig())
+		debugCoreLog("applyConfig fallback to default raw config")
+	} else {
+		debugCoreLog(
+			"applyConfig parsed configPath=%s mixedPort=%d port=%d socksPort=%d allowLan=%v controller=%s",
+			configPath,
+			currentConfig.General.MixedPort,
+			currentConfig.General.Port,
+			currentConfig.General.SocksPort,
+			currentConfig.General.AllowLan,
+			currentConfig.Controller.ExternalController,
+		)
 	}
 	hub.ApplyConfig(currentConfig)
 	patchSelectGroup(params.SelectedMap)

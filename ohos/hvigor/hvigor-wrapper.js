@@ -60,7 +60,7 @@ function getBundledHvigorVersion() {
   }).trim();
   const hvigorBinDir = path.dirname(hvigorwPath);
   const toolRoot = path.dirname(hvigorBinDir);
-  const packageJsonPath = path.join(toolRoot, 'hvigor', 'hvigor', 'package.json');
+  const packageJsonPath = path.join(toolRoot, 'hvigor', 'package.json');
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
   return packageJson.version;
 }
@@ -97,14 +97,25 @@ function getHvigorWorkspaceDir() {
 
 function ensureSymlink(targetPath, linkPath) {
   fs.mkdirSync(path.dirname(linkPath), {recursive: true});
+  const removePathSync = (target) => {
+    if (!fs.existsSync(target)) {
+      return;
+    }
+    const stat = fs.lstatSync(target);
+    if (stat.isDirectory() && !stat.isSymbolicLink()) {
+      fs.rmSync(target, {recursive: true, force: true});
+      return;
+    }
+    fs.rmSync(target, {force: true});
+  };
   try {
     const currentTarget = fs.readlinkSync(linkPath);
     if (path.resolve(path.dirname(linkPath), currentTarget) === targetPath) {
       return;
     }
-    fs.rmSync(linkPath, {recursive: true, force: true});
+    removePathSync(linkPath);
   } catch (_) {
-    fs.rmSync(linkPath, {recursive: true, force: true});
+    removePathSync(linkPath);
   }
   fs.symlinkSync(targetPath, linkPath, 'dir');
 }
@@ -113,11 +124,11 @@ function getBundledRuntimeNodeModules() {
   const toolRoot = getHvigorToolRoot();
   const nodeModulesRoot = path.join(appHome, 'hvigor', '.runtime-node_modules');
   ensureSymlink(
-      path.join(toolRoot, 'hvigor', 'hvigor'),
+      path.join(toolRoot, 'hvigor'),
       path.join(nodeModulesRoot, '@ohos', 'hvigor'),
   );
   ensureSymlink(
-      path.join(toolRoot, 'hvigor', 'hvigor-ohos-plugin'),
+      path.join(toolRoot, 'hvigor-ohos-plugin'),
       path.join(nodeModulesRoot, '@ohos', 'hvigor-ohos-plugin'),
   );
   return nodeModulesRoot;
@@ -140,11 +151,11 @@ function prepareBundledHvigorWorkspace() {
   fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson));
 
   ensureSymlink(
-      path.join(toolRoot, 'hvigor', 'hvigor'),
+      path.join(toolRoot, 'hvigor'),
       path.join(workspaceDir, 'node_modules', '@ohos', 'hvigor'),
   );
   ensureSymlink(
-      path.join(toolRoot, 'hvigor', 'hvigor-ohos-plugin'),
+      path.join(toolRoot, 'hvigor-ohos-plugin'),
       path.join(workspaceDir, 'node_modules', '@ohos', 'hvigor-ohos-plugin'),
   );
 }
@@ -169,31 +180,36 @@ function patchHvigorConfigForUpstreamWrapper() {
   fs.readFileSync = function patchedReadFileSync(filePath, options) {
     const resolvedPath = typeof filePath === 'string' ? path.resolve(filePath) : null;
     const content = originalReadFileSync.apply(this, arguments);
-    if (resolvedPath !== hvigorConfigPath) {
-      return content;
+    const stringContent = Buffer.isBuffer(content) ? content.toString('utf8') : content;
+
+    if (resolvedPath === hvigorConfigPath) {
+      const config = JSON.parse(stringContent);
+      if (!config.hvigorVersion) {
+        config.hvigorVersion = bundledHvigorVersion;
+      }
+      const patchedContent = `${JSON.stringify(config, null, 2)}\n`;
+      return normalizePatchedReadContent(patchedContent, options);
     }
 
-    const config = JSON.parse(Buffer.isBuffer(content) ? content.toString('utf8') : content);
-    if (!config.hvigorVersion) {
-      config.hvigorVersion = bundledHvigorVersion;
-    }
-    const patchedContent = `${JSON.stringify(config, null, 2)}\n`;
-
-    if (options == null) {
-      return Buffer.from(patchedContent);
-    }
-    if (typeof options === 'string') {
-      return patchedContent;
-    }
-    if (typeof options === 'object' && options.encoding) {
-      return patchedContent;
-    }
-    return Buffer.from(patchedContent);
+    return content;
   };
 
   return () => {
     fs.readFileSync = originalReadFileSync;
   };
+}
+
+function normalizePatchedReadContent(content, options) {
+  if (options == null) {
+    return Buffer.from(content);
+  }
+  if (typeof options === 'string') {
+    return content;
+  }
+  if (typeof options === 'object' && options.encoding) {
+    return content;
+  }
+  return Buffer.from(content);
 }
 
 function resolveFlutterNativeHar(flutterSdk) {
@@ -274,9 +290,18 @@ if (!fs.existsSync(upstreamWrapperPath)) {
 
 prepareOpenHarmonySigningAssets({
   appHome,
-  ohosSdkHome: process.env.OHOS_SDK_HOME || process.env.OHOS_BASE_SDK_HOME || '',
+  ohosSdkHome:
+      process.env.FLCLASH_OHOS_SOURCE_SDK_HOME ||
+      process.env.HOS_SDK_HOME ||
+      process.env.OHOS_SDK_HOME ||
+      process.env.OHOS_BASE_SDK_HOME ||
+      '',
   signToolPath: path.join(
-      process.env.OHOS_SDK_HOME || process.env.OHOS_BASE_SDK_HOME || '',
+      process.env.FLCLASH_OHOS_SOURCE_SDK_HOME ||
+      process.env.HOS_SDK_HOME ||
+      process.env.OHOS_SDK_HOME ||
+      process.env.OHOS_BASE_SDK_HOME ||
+      '',
       'toolchains',
       'lib',
       'hap-sign-tool.jar',
@@ -288,9 +313,9 @@ prepareBundledHvigorWorkspace();
 prepareNodePath();
 const restorePackage = patchOhosPackageForNativeHar(appHome, flutterSdk);
 const restoreFs = patchHvigorConfigForUpstreamWrapper();
-try {
-  require(upstreamWrapperPath);
-} finally {
+process.on('exit', () => {
   restorePackage();
   restoreFs();
-}
+});
+
+require(upstreamWrapperPath);

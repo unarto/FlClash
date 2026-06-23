@@ -7,6 +7,8 @@
   "license": "",
   "dependencies": {
     "@ohos/flutter_ohos": "har/flutter.har",
+    "flutter_native_arm64_v8a": "file:../har/flutter_native_arm64_v8a.har",
+    "libentry.so": "file:./src/main/cpp/types/libentry",
     "window_ext": "file:../har/window_ext.har",
     "wifi_ssid": "file:../har/wifi_ssid.har",
     "setup": "file:../har/setup.har",

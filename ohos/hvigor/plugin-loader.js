@@ -38,7 +38,7 @@ function getWorkspaceNodeModules() {
 function getBundledHvigorVersion() {
   const hvigorBinDir = getHvigorToolRoot();
   const toolRoot = path.dirname(hvigorBinDir);
-  const packageJsonPath = path.join(toolRoot, 'hvigor', 'hvigor', 'package.json');
+  const packageJsonPath = path.join(toolRoot, 'hvigor', 'package.json');
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
   return packageJson.version;
 }
@@ -112,10 +112,40 @@ function withWorkspaceNodePath(loader) {
 }
 
 function getHvigorToolRoot() {
-  const hvigorwPath = childProcess.execFileSync('which', ['hvigorw'], {
+  const hvigorwPath = resolveHvigorwPath();
+  return path.dirname(fs.realpathSync(hvigorwPath));
+}
+
+function resolveHvigorwPath() {
+  const candidates = [
+    process.env.HVIGORW,
+    process.env.HVIGOR_HOME && path.join(process.env.HVIGOR_HOME, 'bin', 'hvigorw'),
+    process.env.DEVECO_HOME &&
+        path.join(process.env.DEVECO_HOME, 'Contents', 'tools', 'hvigor', 'bin', 'hvigorw'),
+    '/Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw',
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return childProcess.execFileSync('bash', ['-lc', 'command -v hvigorw'], {
     encoding: 'utf8',
   }).trim();
-  return path.dirname(fs.realpathSync(hvigorwPath));
+}
+
+function removePathSync(targetPath) {
+  if (!fs.existsSync(targetPath)) {
+    return;
+  }
+  const stat = fs.lstatSync(targetPath);
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    fs.rmSync(targetPath, {recursive: true, force: true});
+    return;
+  }
+  fs.rmSync(targetPath, {force: true});
 }
 
 function ensureSymlink(targetPath, linkPath) {
@@ -128,10 +158,10 @@ function ensureSymlink(targetPath, linkPath) {
         return;
       }
     } catch (_) {
-      fs.rmSync(linkPath, {recursive: true, force: true});
+      removePathSync(linkPath);
     }
   }
-  fs.rmSync(linkPath, {recursive: true, force: true});
+  removePathSync(linkPath);
   fs.symlinkSync(targetPath, linkPath, 'dir');
 }
 
@@ -142,11 +172,11 @@ function getBundledHvigorNodeModules() {
   const ohosNodeModulesRoot = path.join(nodeModulesRoot, '@ohos');
 
   ensureSymlink(
-      path.join(toolRoot, 'hvigor', 'hvigor'),
+      path.join(toolRoot, 'hvigor'),
       path.join(ohosNodeModulesRoot, 'hvigor'),
   );
   ensureSymlink(
-      path.join(toolRoot, 'hvigor', 'hvigor-ohos-plugin'),
+      path.join(toolRoot, 'hvigor-ohos-plugin'),
       path.join(ohosNodeModulesRoot, 'hvigor-ohos-plugin'),
   );
 
@@ -242,7 +272,7 @@ function prepareNativePluginModule(moduleDir) {
   if (fs.existsSync(moduleOhModulesDir)) {
     const stat = fs.lstatSync(moduleOhModulesDir);
     if (stat.isSymbolicLink()) {
-      fs.rmSync(moduleOhModulesDir, {recursive: true, force: true});
+      removePathSync(moduleOhModulesDir);
     }
   }
   fs.mkdirSync(moduleOhModulesDir, {recursive: true});

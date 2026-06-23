@@ -19,6 +19,7 @@ import 'database/database.dart';
 import 'enum/enum.dart';
 import 'l10n/l10n.dart';
 import 'models/models.dart';
+import 'plugins/app.dart';
 import 'providers/providers.dart';
 
 class GlobalState {
@@ -48,13 +49,19 @@ class GlobalState {
   }
 
   Future<ProviderContainer> init(int version) async {
+    print('[BOOT] GlobalState.init start');
     coreSHA256 = const String.fromEnvironment('CORE_SHA256');
     isPre = const String.fromEnvironment('APP_ENV') != 'stable';
     await _initDynamicColor();
+    print('[BOOT] GlobalState.init dynamic color done');
     return _initData(version);
   }
 
   Future<void> _initDynamicColor() async {
+    accentColor = const Color(defaultPrimaryColor);
+    if (system.isOhos) {
+      return;
+    }
     try {
       corePalette = await DynamicColorPlugin.getCorePalette();
       accentColor =
@@ -65,11 +72,12 @@ class GlobalState {
 
   String get ua => container
       .read(patchClashConfigProvider.select((state) => state.globalUa))
-      .takeFirstValid([packageInfo.ua]);
+      .takeFirstValid([packageInfo.providerCompatibleUa]);
 
   BuildContext get _context => navigatorKey.currentContext!;
 
   Future<ProviderContainer> _initData(int version) async {
+    print('[BOOT] GlobalState._initData start');
     final appState = AppState(
       brightness: WidgetsBinding.instance.platformDispatcher.platformBrightness,
       version: version,
@@ -81,8 +89,11 @@ class GlobalState {
       systemUiOverlayStyle: const SystemUiOverlayStyle(),
     );
     final appStateOverrides = buildAppStateOverrides(appState);
-    packageInfo = await PackageInfo.fromPlatform();
+    print('[BOOT] appState overrides ready');
+    packageInfo = await system.getPackageInfo();
+    print('[BOOT] packageInfo ready ${packageInfo.version}');
     final configMap = await preferences.getConfigMap();
+    print('[BOOT] preferences config loaded');
     final config = await migration.migrationIfNeeded(
       configMap,
       sync: (data) async {
@@ -101,17 +112,22 @@ class GlobalState {
         return config;
       },
     );
+    print('[BOOT] migration done');
     final configOverrides = buildConfigOverrides(config);
     container = ProviderContainer(
       overrides: [...appStateOverrides, ...configOverrides],
     );
+    print('[BOOT] provider container ready');
     final profiles = await database.profilesDao.query().get();
+    print('[BOOT] profiles query done ${profiles.length}');
     container.read(profilesProvider.notifier).setAndReorder(profiles);
     await AppLocalizations.load(
       utils.getLocaleForString(config.appSettingProps.locale) ??
           WidgetsBinding.instance.platformDispatcher.locale,
     );
+    print('[BOOT] l10n loaded');
     await window?.init(version, config.windowProps);
+    print('[BOOT] window init done');
     return container;
   }
 
@@ -281,12 +297,22 @@ class GlobalState {
   }
 
   Future<void> openUrl(String url) async {
+    commonPrint.log('[external-url] prompt url=$url');
     final res = await showMessage(
       message: TextSpan(text: url),
       title: currentAppLocalizations.externalLink,
       confirmText: currentAppLocalizations.go,
     );
+    commonPrint.log('[external-url] prompt result url=$url confirmed=$res');
     if (res != true) {
+      return;
+    }
+    if (system.isOhos) {
+      final success = await app?.openExternalUrl(url) ?? false;
+      commonPrint.log('[external-url] ohos open result url=$url success=$success');
+      if (!success) {
+        showNotifier('打开外部链接失败');
+      }
       return;
     }
     launchUrl(Uri.parse(url));
@@ -307,23 +333,37 @@ class GlobalState {
         logLevel: LogLevel.warning,
       );
     };
+    print('[BOOT] attach initApp start');
     container.read(systemActionProvider.notifier).updateTray();
+    print('[BOOT] attach updateTray done');
     container.read(profilesActionProvider.notifier).autoUpdateProfiles();
+    print('[BOOT] attach autoUpdateProfiles done');
     container.read(commonActionProvider.notifier).autoCheckUpdate();
+    print('[BOOT] attach autoCheckUpdate triggered');
     autoLaunch?.updateStatus(container.read(appSettingProvider).autoLaunch);
+    print('[BOOT] attach autoLaunch update done');
     if (!container.read(appSettingProvider).silentLaunch) {
       window?.show();
     } else {
       window?.hide();
     }
+    print('[BOOT] attach window visibility done');
     await _handleFailedPreference();
+    print('[BOOT] attach failedPreference done');
     await _handlerDisclaimer();
+    print('[BOOT] attach disclaimer done');
     await _showCrashlyticsTip();
+    print('[BOOT] attach crashlyticsTip done');
     await container.read(coreActionProvider.notifier).connectCore();
+    print('[BOOT] attach connectCore done');
     await container.read(coreActionProvider.notifier).initCore();
+    print('[BOOT] attach initCore done');
     await container.read(setupActionProvider.notifier).initStatus();
+    print('[BOOT] attach initStatus done');
     container.read(initProvider.notifier).value = true;
+    print('[BOOT] attach initProvider done');
     permissions.check();
+    print('[BOOT] attach permissions check triggered');
   }
 
   Future<void> _handleFailedPreference() async {
@@ -365,7 +405,7 @@ class GlobalState {
   }
 
   Future<void> _showCrashlyticsTip() async {
-    if (!system.isAndroid) return;
+    if (!system.isAndroid || system.isOhos) return;
     if (container.read(
       appSettingProvider.select((state) => state.crashlyticsTip),
     )) {
@@ -382,6 +422,12 @@ class GlobalState {
   }
 
   Future<void> _handlerDisclaimer() async {
+    if (system.isOhos) {
+      container
+          .read(appSettingProvider.notifier)
+          .update((state) => state.copyWith(disclaimerAccepted: true));
+      return;
+    }
     if (container.read(
       appSettingProvider.select((state) => state.disclaimerAccepted),
     )) {

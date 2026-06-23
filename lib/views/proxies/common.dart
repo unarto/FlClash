@@ -65,23 +65,33 @@ Future<void> proxyDelayTest(Proxy proxy, [String? testUrl]) async {
   if (state.proxyName.isEmpty) {
     return;
   }
+  commonPrint.log(
+    '[proxy-delay] start groupProxy=${proxy.name} targetProxy=${state.proxyName} url=$currentTestUrl',
+  );
   ref
       .read(proxiesActionProvider.notifier)
       .setDelay(Delay(url: currentTestUrl, name: state.proxyName, value: 0));
-  ref
-      .read(proxiesActionProvider.notifier)
-      .setDelay(await coreController.getDelay(currentTestUrl, state.proxyName));
+  final delay = await coreController.getDelay(currentTestUrl, state.proxyName);
+  commonPrint.log(
+    '[proxy-delay] done proxy=${delay.name} url=${delay.url} value=${delay.value}',
+  );
+  ref.read(proxiesActionProvider.notifier).setDelay(delay);
 }
 
 Future<void> delayTest(List<Proxy> proxies, [String? testUrl]) async {
-  final delayProxies = proxies.map<Future>((proxy) async {
-    await proxyDelayTest(proxy, testUrl);
-  }).toList();
-
-  final batchesDelayProxies = delayProxies.batch(100);
-  for (final batchDelayProxies in batchesDelayProxies) {
-    await Future.wait(batchDelayProxies);
+  final batchSize = system.isOhos ? 4 : 100;
+  commonPrint.log(
+    '[proxy-delay] batch start proxies=${proxies.length} testUrl=${testUrl ?? ''}',
+  );
+  final batches = proxies.batch(batchSize);
+  for (final batch in batches) {
+    await Future.wait(
+      batch.map((proxy) async {
+        await proxyDelayTest(proxy, testUrl);
+      }),
+    );
   }
+  commonPrint.log('[proxy-delay] batch done proxies=${proxies.length}');
   globalState.container.read(sortNumProvider.notifier).add();
 }
 

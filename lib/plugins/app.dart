@@ -10,15 +10,24 @@ class App {
   static App? _instance;
   late MethodChannel methodChannel;
   Function()? onExit;
+  Future<void> Function(String link)? onAppLink;
 
   App._internal() {
     methodChannel = const MethodChannel('$packageName/app');
     methodChannel.setMethodCallHandler((call) async {
       switch (call.method) {
+        case 'appLink':
+          final link = call.arguments as String? ?? '';
+          if (onAppLink != null && link.isNotEmpty) {
+            await onAppLink!(link);
+            return;
+          }
+          throw MissingPluginException();
         case 'exit':
           if (onExit != null) {
             await onExit!();
           }
+          return;
         default:
           throw MissingPluginException();
       }
@@ -32,6 +41,116 @@ class App {
 
   Future<bool?> moveTaskToBack() async {
     return methodChannel.invokeMethod<bool>('moveTaskToBack');
+  }
+
+  Future<bool?> exitApp() async {
+    return methodChannel.invokeMethod<bool>('exitApp');
+  }
+
+  Future<Map<String, String>?> getAppPaths() async {
+    final result = await methodChannel.invokeMapMethod<String, String>(
+      'getAppPaths',
+    );
+    return result == null ? null : Map<String, String>.from(result);
+  }
+
+  Future<String?> consumePendingLink() {
+    return methodChannel.invokeMethod<String>('consumePendingLink');
+  }
+
+  Future<int?> startCoreChildProcess(String entryParams) {
+    return methodChannel.invokeMethod<int>('startCoreChildProcess', {
+      'entryParams': entryParams,
+    });
+  }
+
+  Future<int?> startBundledCoreProcess(String sourcePath, String socketPath) {
+    return methodChannel.invokeMethod<int>('startBundledCoreProcess', {
+      'sourcePath': sourcePath,
+      'socketPath': socketPath,
+    });
+  }
+
+  Future<String?> invokeCore(String action) {
+    return methodChannel.invokeMethod<String>('invokeCore', {'action': action});
+  }
+
+  Future<String?> consumeCoreEvents() {
+    return methodChannel.invokeMethod<String>('consumeCoreEvents');
+  }
+
+  Future<bool?> startVpn({
+    required String stack,
+    required bool ipv6,
+    required bool allowBypass,
+  }) {
+    return methodChannel.invokeMethod<bool>('startVpn', {
+      'stack': stack,
+      'ipv6': ipv6,
+      'allowBypass': allowBypass,
+    });
+  }
+
+  Future<bool?> stopVpn() {
+    return methodChannel.invokeMethod<bool>('stopVpn');
+  }
+
+  Future<bool?> getVpnRunning() {
+    return methodChannel.invokeMethod<bool>('getVpnRunning');
+  }
+
+  Future<bool?> markExecutable(String path) {
+    return methodChannel.invokeMethod<bool>('markExecutable', {'path': path});
+  }
+
+  Future<String?> importImageToGallery(
+    String path, {
+    String title = 'flclash_qr_test',
+  }) {
+    return methodChannel.invokeMethod<String>('importImageToGallery', {
+      'path': path,
+      'title': title,
+    });
+  }
+
+  Future<String?> prepareGalleryTestImage(
+    String path, {
+    String title = 'flclash_qr_test',
+  }) {
+    return methodChannel.invokeMethod<String>('prepareGalleryTestImage', {
+      'path': path,
+      'title': title,
+    });
+  }
+
+  Future<String?> writeFileToSharedDownload(
+    String path, {
+    String fileName = 'jisu_qr_test.png',
+  }) {
+    return methodChannel.invokeMethod<String>('writeFileToSharedDownload', {
+      'path': path,
+      'fileName': fileName,
+    });
+  }
+
+  Future<String?> getLastImportedGalleryUri() {
+    return methodChannel.invokeMethod<String>('getLastImportedGalleryUri');
+  }
+
+  Future<String?> getLastFilePickerState() {
+    return methodChannel.invokeMethod<String>('getLastFilePickerState');
+  }
+
+  Future<bool?> openExternalUrl(String url) {
+    return methodChannel.invokeMethod<bool>('openExternalUrl', {'url': url});
+  }
+
+  Future<bool?> setClipboardText(String text) {
+    return methodChannel.invokeMethod<bool>('setClipboardText', {'text': text});
+  }
+
+  Future<String?> getClipboardText() {
+    return methodChannel.invokeMethod<String>('getClipboardText');
   }
 
   Future<List<Package>> getPackages() async {
@@ -53,9 +172,7 @@ class App {
   }
 
   Future<bool?> requestNotificationsPermission() async {
-    return methodChannel.invokeMethod<bool>(
-      'requestNotificationsPermission',
-    );
+    return methodChannel.invokeMethod<bool>('requestNotificationsPermission');
   }
 
   Future<bool> openFile(String path) async {
@@ -74,9 +191,7 @@ class App {
   }
 
   Future<bool?> tip(String? message) async {
-    return methodChannel.invokeMethod<bool>('tip', {
-      'message': '$message',
-    });
+    return methodChannel.invokeMethod<bool>('tip', {'message': '$message'});
   }
 
   Future<bool?> initShortcuts() async {
@@ -108,4 +223,4 @@ class App {
   }
 }
 
-final app = system.isAndroid ? App() : null;
+final app = (system.isAndroid || system.isOhos) ? App() : null;

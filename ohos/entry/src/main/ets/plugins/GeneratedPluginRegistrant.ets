@@ -1,7 +1,6 @@
 import { FlutterEngine, Log } from '@ohos/flutter_ohos';
-import WindowExtPlugin from 'window_ext';
-import WifiSsidPlugin from 'wifi_ssid';
-import ProxyPlugin from 'proxy';
+import AppPlugin from './AppPlugin';
+import FilePickerPlugin from './FilePickerPlugin';
 
 /**
  * Generated file. Do not edit.
@@ -15,9 +14,11 @@ export class GeneratedPluginRegistrant {
 
   static registerWith(flutterEngine: FlutterEngine) {
     try {
-      flutterEngine.getPlugins()?.add(new WindowExtPlugin());
-      flutterEngine.getPlugins()?.add(new WifiSsidPlugin());
-      flutterEngine.getPlugins()?.add(new ProxyPlugin());
+      const plugins = flutterEngine.getPlugins();
+      if (plugins != null) {
+        plugins.add(new AppPlugin());
+        plugins.add(new FilePickerPlugin());
+      }
     } catch (e) {
       Log.e(
         TAG,

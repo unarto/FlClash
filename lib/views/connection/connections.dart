@@ -3,12 +3,43 @@ import 'dart:async';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
 
 import 'item.dart';
+
+const _ohosRecentRequestFallbackTtl = Duration(seconds: 10);
+const _ohosFallbackRequestLimit = 50;
+
+@visibleForTesting
+List<TrackerInfo> buildOhosConnectionFallback(
+  List<TrackerInfo> requests, {
+  DateTime? now,
+}) {
+  final current = now ?? DateTime.now();
+  final threshold = current.subtract(_ohosRecentRequestFallbackTtl);
+  final uniqueRequests = <TrackerInfo>[];
+
+  for (final item in requests.reversed) {
+    final alreadyExists = uniqueRequests.any(
+      (current) => current.id == item.id,
+    );
+    if (!alreadyExists) {
+      uniqueRequests.add(item);
+    }
+    if (uniqueRequests.length >= _ohosFallbackRequestLimit) {
+      break;
+    }
+  }
+
+  final recentRequests = uniqueRequests
+      .where((item) => item.start.isAfter(threshold))
+      .toList();
+  return recentRequests.isNotEmpty ? recentRequests : uniqueRequests;
+}
 
 class ConnectionsView extends ConsumerStatefulWidget {
   const ConnectionsView({super.key});
@@ -18,12 +49,18 @@ class ConnectionsView extends ConsumerStatefulWidget {
 }
 
 class _ConnectionsViewState extends ConsumerState<ConnectionsView> {
+  static const _ohosPollInterval = Duration(milliseconds: 250);
+  static const _defaultPollInterval = Duration(seconds: 1);
+  static const _ohosSnapshotTtl = Duration(seconds: 5);
+
   final _connectionsStateNotifier = ValueNotifier<TrackerInfosState>(
     const TrackerInfosState(),
   );
   final ScrollController _scrollController = ScrollController();
 
   Timer? timer;
+  List<TrackerInfo> _lastNonEmptyConnections = const [];
+  DateTime? _lastNonEmptyConnectionsAt;
 
   List<Widget> _buildActions() {
     return [
@@ -53,9 +90,12 @@ class _ConnectionsViewState extends ConsumerState<ConnectionsView> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (mounted) {
         await _updateConnections();
-        timer = Timer(const Duration(seconds: 1), () async {
-          _updateConnectionsTask();
-        });
+        timer = Timer(
+          system.isOhos ? _ohosPollInterval : _defaultPollInterval,
+          () async {
+            _updateConnectionsTask();
+          },
+        );
       }
     });
   }
@@ -67,9 +107,33 @@ class _ConnectionsViewState extends ConsumerState<ConnectionsView> {
   }
 
   Future<void> _updateConnections() async {
+    final connections = await coreController.getConnections();
+    if (connections.isNotEmpty) {
+      _lastNonEmptyConnections = connections;
+      _lastNonEmptyConnectionsAt = DateTime.now();
+    }
+    final shouldReuseLastSnapshot =
+        system.isOhos &&
+        connections.isEmpty &&
+        _lastNonEmptyConnections.isNotEmpty &&
+        _lastNonEmptyConnectionsAt != null &&
+        DateTime.now().difference(_lastNonEmptyConnectionsAt!) <=
+            _ohosSnapshotTtl;
+    final recentRequestFallback =
+        system.isOhos && connections.isEmpty && !shouldReuseLastSnapshot
+        ? _recentRequestsFallback()
+        : const <TrackerInfo>[];
     _connectionsStateNotifier.value = _connectionsStateNotifier.value.copyWith(
-      trackerInfos: await coreController.getConnections(),
+      trackerInfos: shouldReuseLastSnapshot
+          ? _lastNonEmptyConnections
+          : (recentRequestFallback.isNotEmpty
+                ? recentRequestFallback
+                : connections),
     );
+  }
+
+  List<TrackerInfo> _recentRequestsFallback() {
+    return buildOhosConnectionFallback(ref.read(requestsProvider).list);
   }
 
   Future<void> _handleBlockConnection(String id) async {

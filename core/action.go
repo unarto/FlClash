@@ -66,6 +66,26 @@ func handleAction(action *Action, result ActionResult) {
 		path := action.Data.(string)
 		result.success(handleValidateConfig(path))
 		return
+	case convertSubscriptionMethod:
+		data := action.Data.(string)
+		converted, err := handleConvertSubscription(data)
+		if err != nil {
+			logError("convert subscription failed: %v", err)
+			result.success("")
+			return
+		}
+		result.success(converted)
+		return
+	case decodeQrImageMethod:
+		path := action.Data.(string)
+		decoded, err := handleDecodeQrImage(path)
+		if err != nil {
+			logError("decode qr image failed: %v", err)
+			result.success("")
+			return
+		}
+		result.success(decoded)
+		return
 	case updateConfigMethod:
 		data := []byte(action.Data.(string))
 		result.success(handleUpdateConfig(data))
@@ -189,8 +209,17 @@ func handleAction(action *Action, result ActionResult) {
 		})
 		return
 	case crashMethod:
+		debugCoreLog("crashMethod begin")
 		result.success(true)
-		handleCrash()
+		debugCoreLog("crashMethod invoke result sent")
+		sendMessage(Message{
+			Type: CrashMessage,
+			Data: "core done",
+		})
+		debugCoreLog("crashMethod crash event sent")
+		handleShutdown()
+		debugCoreLog("crashMethod shutdown done")
+		return
 	case deleteFile:
 		path := action.Data.(string)
 		handleDelFile(path, result)

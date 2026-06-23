@@ -143,6 +143,40 @@ Support the following actions
            bash scripts/ohos/install_and_launch.sh
            ```
 
+        5. Verify the OHOS runtime reaches core initialization:
+
+           ```bash
+           bash scripts/ohos/verify_runtime.sh
+           ```
+
+## Dev Tools
+
+Install shared LSP support for Codex and Claude:
+
+```bash
+bash scripts/dev/install_lsp_support.sh
+```
+
+The installer will:
+
+- install `gopls` to `~/go/bin` when missing
+- install repo-scoped `yaml-language-server` and `vscode-json-languageserver`
+- detect the current Dart SDK and `clangd`
+- regenerate the repo-local `.mcp.json` and `.lsp-mcp.json`
+- update `~/.codex/config.toml`
+- register the same MCP server in Claude when the `claude` CLI is available
+
+After it finishes, restart both clients and approve the `flclash-lsp` MCP server in Claude if prompted.
+
+Quick verification:
+
+```bash
+cat .mcp.json
+cat .lsp-mcp.json
+rg -n "\[mcp_servers\.flclash-lsp\]|LSP_CONFIG_PATH|LSP_LOG_LEVEL" ~/.codex/config.toml
+claude mcp list
+```
+
 ## Star
 
 The easiest way to support developers is to click on the star (⭐) at the top of the page.

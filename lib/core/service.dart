@@ -6,6 +6,9 @@ import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/core.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/core.dart';
+import 'package:fl_clash/plugins/app.dart';
+import 'package:flutter/services.dart';
+import 'package:path/path.dart';
 
 import 'interface.dart';
 import 'transport.dart';
@@ -20,6 +23,7 @@ class CoreService extends CoreHandlerInterface {
   final Map<String, Completer> _callbackCompleterMap = {};
 
   Process? _process;
+  int? _ohosChildPid;
 
   factory CoreService() {
     _instance ??= CoreService._internal();
@@ -85,10 +89,27 @@ class CoreService extends CoreHandlerInterface {
     );
   }
 
+  Future<void> _dumpOhosCoreLogs(String tag) async {
+    if (!system.isOhos) {
+      return;
+    }
+    final homeDir = await appPath.homeDirPath;
+    for (final fileName in const ['flclash-bridge.log', 'flclash-core.log']) {
+      final file = File(join(homeDir, fileName));
+      if (!await file.exists()) {
+        commonPrint.log('[OHOS-CORE] $tag $fileName missing');
+        continue;
+      }
+      final content = await file.readAsString();
+      commonPrint.log('[OHOS-CORE] $tag $fileName => $content');
+    }
+  }
+
   Future<void> start() async {
     if (_process != null) {
       await shutdown(false);
     }
+    await _transport.readyCompleter.future;
     if (system.isWindows && await system.checkIsAdmin()) {
       final isSuccess = await request.startCoreByHelper(_transport.address);
       if (isSuccess) {
@@ -97,7 +118,47 @@ class CoreService extends CoreHandlerInterface {
       }
     }
     try {
-      _process = await Process.start(appPath.corePath, [_transport.address]);
+      if (system.isOhos) {
+        try {
+          _ohosChildPid = await app?.startCoreChildProcess(_transport.address);
+          commonPrint.log('Started OHOS core child process pid=$_ohosChildPid');
+          await _transport.connectionCompleter.future;
+          return;
+        } on PlatformException catch (e) {
+          commonPrint.log(
+            'OHOS native child process unavailable, fallback to bundled exec: $e',
+            logLevel: LogLevel.warning,
+          );
+        }
+        final sourcePath = await appPath.ohosBundledCorePath;
+        for (final fileName in const [
+          'flclash-bridge.log',
+          'flclash-core.log',
+        ]) {
+          await File(join(await appPath.homeDirPath, fileName)).safeDelete();
+        }
+        final pid = await app?.startBundledCoreProcess(
+          sourcePath,
+          _transport.address,
+        );
+        if (pid == null || pid <= 0) {
+          throw StateError(
+            'startBundledCoreProcess returned invalid pid: $pid',
+          );
+        }
+        _ohosChildPid = pid;
+        commonPrint.log(
+          'Started OHOS core executable via native bridge pid=$_ohosChildPid source=$sourcePath',
+        );
+        unawaited(() async {
+          await Future<void>.delayed(const Duration(seconds: 1));
+          await _dumpOhosCoreLogs('after-start-1s');
+          await Future<void>.delayed(const Duration(seconds: 2));
+          await _dumpOhosCoreLogs('after-start-3s');
+        }());
+      } else {
+        _process = await Process.start(appPath.corePath, [_transport.address]);
+      }
     } catch (e) {
       commonPrint.log(
         'Failed to start core process: $e',
@@ -133,6 +194,22 @@ class CoreService extends CoreHandlerInterface {
     _shutdownCompleter = Completer();
     if (system.isWindows) {
       await request.stopCoreByHelper();
+    }
+    if (system.isOhos) {
+      if (_transport.connectionCompleter.isCompleted) {
+        try {
+          await invoke<bool>(
+            method: ActionMethod.shutdown,
+            timeout: const Duration(seconds: 2),
+          );
+        } catch (_) {}
+      }
+      await _transport.disconnect();
+      _process?.kill();
+      _process = null;
+      _ohosChildPid = null;
+      _clearCompleter();
+      return true;
     }
     _transport.disconnected();
     _process?.kill();
@@ -182,4 +259,4 @@ class CoreService extends CoreHandlerInterface {
   Completer get completer => _transport.connectionCompleter;
 }
 
-final coreService = system.isDesktop ? CoreService() : null;
+final coreService = (system.isDesktop || system.isOhos) ? CoreService() : null;

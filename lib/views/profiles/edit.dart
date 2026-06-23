@@ -62,6 +62,9 @@ class _EditProfileViewState extends State<EditProfileView> {
   }
 
   Future<void> _handleConfirm() async {
+    commonPrint.log(
+      '[profile-edit] confirm start id=${widget.profile.id} hasFileData=${_fileData != null}',
+    );
     if (!_formKey.currentState!.validate()) return;
     var profile = widget.profile.copyWith(
       url: _urlController.text,
@@ -76,6 +79,9 @@ class _EditProfileViewState extends State<EditProfileView> {
     );
     final hasUpdate = widget.profile.url != profile.url;
     if (_fileData != null) {
+      commonPrint.log(
+        '[profile-edit] confirm saving uploaded file id=${profile.id} autoUpdate=$_autoUpdate type=${profile.type.name}',
+      );
       if (profile.type == ProfileType.url && _autoUpdate) {
         final appLocalizations = context.appLocalizations;
         final res = await globalState.showMessage(
@@ -86,9 +92,15 @@ class _EditProfileViewState extends State<EditProfileView> {
           profile = profile.copyWith(autoUpdate: false);
         }
       }
-      profilesAction.putProfile(await profile.saveFile(_fileData!));
+      final savedProfile = await profile.saveFile(_fileData!);
+      commonPrint.log(
+        '[profile-edit] confirm saveFile done id=${savedProfile.id} lastUpdate=${savedProfile.lastUpdateDate}',
+      );
+      profilesAction.putProfile(savedProfile);
+      commonPrint.log('[profile-edit] confirm putProfile done id=${savedProfile.id}');
     } else if (!hasUpdate) {
       profilesAction.putProfile(profile);
+      commonPrint.log('[profile-edit] confirm putProfile done id=${profile.id}');
     } else {
       globalState.safeRun(() async {
         await Future.delayed(commonDuration);
@@ -98,7 +110,9 @@ class _EditProfileViewState extends State<EditProfileView> {
       });
     }
     if (mounted) {
+      commonPrint.log('[profile-edit] confirm pop start id=${profile.id}');
       Navigator.of(context).pop();
+      commonPrint.log('[profile-edit] confirm pop invoked id=${profile.id}');
     }
   }
 
@@ -175,9 +189,17 @@ class _EditProfileViewState extends State<EditProfileView> {
   }
 
   Future<void> _uploadProfileFile() async {
-    final platformFile = await globalState.safeRun(picker.pickerFile);
+    commonPrint.log('[profile-edit] upload start id=${widget.profile.id}');
+    final platformFile = await globalState.safeRun(
+      () => picker.pickerFile(
+        allowedExtensions: const <String>['yaml', 'yml'],
+      ),
+    );
     if (platformFile?.bytes == null) return;
     _fileData = platformFile?.bytes;
+    commonPrint.log(
+      '[profile-edit] upload selected id=${widget.profile.id} bytes=${_fileData?.length ?? 0} name=${platformFile?.name}',
+    );
     if (!mounted) {
       return;
     }
@@ -188,6 +210,7 @@ class _EditProfileViewState extends State<EditProfileView> {
   }
 
   Future<void> _handleBack() async {
+    commonPrint.log('[profile-edit] back dirty id=${widget.profile.id}');
     final appLocalizations = context.appLocalizations;
     final res = await globalState.showMessage(
       title: appLocalizations.tip,

@@ -156,6 +156,42 @@ void main() {
       expect(result, isEmpty);
     });
 
+    test('getConnections parses mihomo style tracker payload', () async {
+      when(() => mock.getConnections()).thenAnswer(
+        (_) async => json.encode({
+          'connections': [
+            {
+              'id': '550e8400-e29b-41d4-a716-446655440000',
+              'metadata': {
+                'network': 'tcp',
+                'sourceIP': '10.0.0.2',
+                'sourcePort': 52734,
+                'destinationIP': '1.1.1.1',
+                'destinationPort': 443,
+                'host': 'example.com',
+                'uid': 2000,
+                'process': 'browser',
+                'sourceGeoIP': ['LAN'],
+                'destinationGeoIP': ['US'],
+              },
+              'upload': 12,
+              'download': 34,
+              'start': '2026-06-18T10:11:12Z',
+              'chains': ['Proxy', 'NodeA'],
+              'rule': 'MATCH',
+              'rulePayload': '',
+            },
+          ],
+        }),
+      );
+      final result = await controller.getConnections();
+      expect(result, hasLength(1));
+      expect(result.first.metadata.sourcePort, '52734');
+      expect(result.first.metadata.destinationPort, '443');
+      expect(result.first.metadata.uid, 2000);
+      expect(result.first.chains, ['Proxy', 'NodeA']);
+    });
+
     test('closeConnection delegates', () async {
       when(() => mock.closeConnection('id1')).thenAnswer((_) async => true);
       await controller.closeConnection('id1');

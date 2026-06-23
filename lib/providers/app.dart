@@ -6,6 +6,7 @@ import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:flutter/services.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
@@ -40,9 +41,15 @@ class Logs extends _$Logs with AutoDisposeNotifierMixin {
     final tempFilePath = await appPath.tempFilePath;
     final file = File(tempFilePath);
     await file.safeWriteAsString(logString);
-    bool res = false;
-    res = await picker.saveFileWithPath(utils.logFile, tempFilePath) != null;
-    return res;
+    if (system.isOhos) {
+      final value = await app?.writeFileToSharedDownload(
+        tempFilePath,
+        fileName: utils.logFile,
+      );
+      await file.safeDelete();
+      return value != null && value.isNotEmpty;
+    }
+    return await picker.saveFileWithPath(utils.logFile, tempFilePath) != null;
   }
 }
 
@@ -74,7 +81,20 @@ class Providers extends _$Providers with AutoDisposeNotifierMixin {
   }
 
   Future<void> syncProviders() async {
-    value = await coreController.getExternalProviders();
+    final providers = await coreController.getExternalProviders();
+    for (final provider in providers) {
+      if (provider.type == 'Proxy' &&
+          provider.vehicleType == 'HTTP' &&
+          provider.count == 0) {
+        commonPrint.log(
+          '[proxy-debug] empty provider '
+          '${provider.name} path=${provider.path ?? ''} '
+          'updatedAt=${provider.updateAt.toIso8601String()}',
+          logLevel: LogLevel.warning,
+        );
+      }
+    }
+    value = providers;
   }
 }
 

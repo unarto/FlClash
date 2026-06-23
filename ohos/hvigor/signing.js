@@ -45,7 +45,7 @@ function exportCertificate(keystorePath, alias, outputPath, asPem = false) {
 }
 
 function pemFingerprint(pemContent) {
-  const der = execFile('openssl', ['x509', '-outform', 'DER'], {
+  const der = execFile('openssl', ['x509', '-inform', 'PEM', '-outform', 'DER'], {
     input: pemContent,
     encoding: 'buffer',
   });

@@ -7,6 +7,7 @@ class Target {
   final String? abi;
   final bool isLib;
   final String? flutterPlatform;
+  final String? outputPlatformDir;
 
   const Target({
     required this.goos,
@@ -14,6 +15,7 @@ class Target {
     this.abi,
     this.isLib = false,
     this.flutterPlatform,
+    this.outputPlatformDir,
   });
 
   // --- Android (c-shared library) ---
@@ -39,6 +41,16 @@ class Target {
     flutterPlatform: 'android-x64',
   );
 
+  // --- OpenHarmony (c-shared library) ---
+  static const ohosArm64 = Target(
+    goos: 'linux',
+    goarch: 'arm64',
+    abi: 'arm64-v8a',
+    isLib: true,
+    flutterPlatform: 'ohos-arm64',
+    outputPlatformDir: 'ohos',
+  );
+
   // --- macOS (executable) ---
   static const macosArm64 = Target(goos: 'darwin', goarch: 'arm64');
   static const macosAmd64 = Target(goos: 'darwin', goarch: 'amd64');
@@ -55,6 +67,7 @@ class Target {
     androidArm,
     androidArm64,
     androidAmd64,
+    ohosArm64,
     macosArm64,
     macosAmd64,
     linuxArm64,
@@ -64,7 +77,7 @@ class Target {
   ];
 
   static List<Target> forPlatform(String platformName) {
-    return all.where((t) => t.goos == platformName).toList();
+    return all.where((t) => t.platformDir == platformName).toList();
   }
 
   static List<Target> resolveAndroidTargets({
@@ -125,7 +138,8 @@ class Target {
 
   /// Platform build directory name (maps goos to what platform builds expect).
   /// darwin → macos, others stay as-is.
-  String get platformDir => goos == 'darwin' ? 'macos' : goos;
+  String get platformDir =>
+      outputPlatformDir ?? (goos == 'darwin' ? 'macos' : goos);
 
   bool get canBuildOnHost {
     final hostOs = Environment.hostOs;

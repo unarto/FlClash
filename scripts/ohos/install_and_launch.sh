@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DEFAULT_BUNDLE_NAME="com.follow.clash"
 DEFAULT_ABILITY_NAME="EntryAbility"
+DEVECO_HDC="/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc"
 
 usage() {
   cat <<'EOF'
@@ -17,9 +18,12 @@ Environment:
   ABILITY_NAME Override ability name. Default: EntryAbility
 
 Notes:
-  - The current OHOS branch only verifies package install + ability launch.
-  - A successful launch on this branch still ends on the in-app unsupported-runtime
-    error screen, because the Flutter runtime port is not implemented yet.
+  - This script verifies install + ability launch against an existing emulator/device.
+  - It also installs an HDC reverse port mapping `device tcp:19000 -> host tcp:19000`
+    so the built-in OHOS WebDAV test config can reach the host test server via
+    `http://127.0.0.1:19000/` inside the emulator.
+  - A passing install/launch result is only the first step. Inspect hilog to confirm
+    the OHOS core actually initializes without TLS relocation failures.
 EOF
 }
 
@@ -30,6 +34,18 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+}
+
+resolve_hdc() {
+  if command -v hdc >/dev/null 2>&1; then
+    command -v hdc
+    return
+  fi
+  if [[ -x "$DEVECO_HDC" ]]; then
+    printf '%s\n' "$DEVECO_HDC"
+    return
+  fi
+  fail "Missing required command: hdc"
 }
 
 resolve_hap_path() {
@@ -74,7 +90,7 @@ resolve_target() {
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
     targets+=("$target")
-  done < <(hdc list targets 2>/dev/null || true)
+  done < <("$HDC_BIN" list targets 2>/dev/null || true)
 
   case "${#targets[@]}" in
     0)
@@ -91,8 +107,50 @@ resolve_target() {
 
 run_hdc() {
   local target="$1"
-  shift
-  hdc -t "$target" "$@"
+  local hdc_bin="$2"
+  shift 2
+  "$hdc_bin" -t "$target" "$@"
+}
+
+setup_webdav_rport() {
+  local target="$1"
+  local hdc_bin="$2"
+  local rules_output
+  rules_output=$(run_hdc "$target" "$hdc_bin" fport ls 2>&1 || true)
+  if [[ "$rules_output" == *"tcp:19000 tcp:19000"* && "$rules_output" == *"[Reverse]"* ]]; then
+    echo "Configured emulator WebDAV reverse port: tcp:19000 -> host tcp:19000"
+    return
+  fi
+
+  local output
+  output=$(run_hdc "$target" "$hdc_bin" rport tcp:19000 tcp:19000 2>&1 || true)
+  if [[ "$output" == *"Forwardport result:OK"* || "$output" == *"already"* ]]; then
+    echo "Configured emulator WebDAV reverse port: tcp:19000 -> host tcp:19000"
+    return
+  fi
+  echo "WARNING: failed to configure WebDAV reverse port: $output" >&2
+}
+
+install_hap() {
+  local target="$1"
+  local hdc_bin="$2"
+  local hap_path="$3"
+  local output
+  local status
+
+  set +e
+  output=$(run_hdc "$target" "$hdc_bin" install -r "$hap_path" 2>&1)
+  status=$?
+  set -e
+  printf '%s\n' "$output"
+
+  if ((status != 0)); then
+    fail "HAP install command failed with exit status $status."
+  fi
+
+  if grep -Eqi '(error:|failed to install|fail to |Error Code:)' <<<"$output"; then
+    fail "HAP install reported failure; see install output above."
+  fi
 }
 
 main() {
@@ -101,7 +159,9 @@ main() {
     exit 0
   fi
 
-  require_command hdc
+  local hdc_bin
+  hdc_bin=$(resolve_hdc)
+  HDC_BIN="$hdc_bin"
 
   local hap_path
   hap_path=$(resolve_hap_path "$@")
@@ -115,23 +175,31 @@ main() {
 
   echo "Using HDC target: $target"
   echo "Installing HAP: $hap_path"
-  run_hdc "$target" install -r "$hap_path"
+  install_hap "$target" "$hdc_bin" "$hap_path"
+
+  setup_webdav_rport "$target" "$hdc_bin"
 
   echo "Launching ${bundle_name}/${ability_name}"
-  run_hdc "$target" shell "aa start -a $ability_name -b $bundle_name"
+  run_hdc "$target" "$hdc_bin" shell "aa start -a $ability_name -b $bundle_name"
 
   cat <<EOF
 Install and launch commands completed.
 
 Next checks on the emulator:
   1. Confirm FlClash appears in the launcher and can be opened.
-  2. Confirm launch reaches the app error screen instead of failing to start.
-  3. If deeper investigation is needed, inspect logs with:
-     hdc -t "$target" shell hilog
+  2. Confirm the app reaches the normal shell instead of an immediate init failure.
+  3. Inspect logs and look for successful OHOS core actions such as:
+     [OHOS-CORE] invoke initClash ... done
+     [OHOS-CORE] invoke setupConfig ... done
+  4. Confirm logs do not contain:
+     initial-exec TLS resolves to dynamic definition
+  5. If deeper investigation is needed, inspect logs with:
+     "$hdc_bin" -t "$target" shell 'hilog -x | grep -E "(OHOS-CORE|initial-exec TLS|Error relocating|FlClashEntry)"'
 
 Current branch expectation:
-  Launch succeeds, then the app shows the intentional unsupported-runtime error
-  until the OHOS runtime port is implemented.
+  Launch succeeds and the bundled Go core can be invoked on a supported
+  HarmonyOS target. Install/launch alone does not prove functional parity,
+  but it should no longer stop at the old unsupported-runtime screen.
 EOF
 }
 

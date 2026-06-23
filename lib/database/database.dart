@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:collection/collection.dart';
@@ -8,6 +9,8 @@ import 'package:drift/native.dart';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
+import 'package:sqlite3/open.dart' as sqlite_open;
+import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
 part 'converter.dart';
 part 'generated/database.g.dart';
@@ -38,6 +41,13 @@ class Database extends _$Database {
   static LazyDatabase _openConnection() {
     return LazyDatabase(() async {
       final databaseFile = File(await appPath.databasePath);
+      if (system.isOhos) {
+        return NativeDatabase.createInBackground(
+          databaseFile,
+          isolateSetup: _setupSqliteForOhos,
+          setup: (_) => _setSqliteTempDirectoryForOhos(),
+        );
+      }
       return NativeDatabase.createInBackground(databaseFile);
     });
   }
@@ -150,6 +160,21 @@ class Database extends _$Database {
       rulesDao.setCustomRulesWithBatch(profileId, b, rules);
     });
   }
+}
+
+void _setupSqliteForOhos() {
+  if (!system.isOhos) return;
+  sqlite_open.open.overrideForAll(_openSqliteOnOhos);
+  _setSqliteTempDirectoryForOhos();
+}
+
+DynamicLibrary _openSqliteOnOhos() {
+  return DynamicLibrary.open('libsqlite3.so');
+}
+
+void _setSqliteTempDirectoryForOhos() {
+  if (!system.isOhos) return;
+  sqlite3.sqlite3.tempDirectory = '/data/storage/el2/base/temp';
 }
 
 extension TableInfoExt<Tbl extends Table, Row> on TableInfo<Tbl, Row> {

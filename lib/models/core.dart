@@ -188,12 +188,44 @@ abstract class ProxiesData with _$ProxiesData {
       _$ProxiesDataFromJson(json);
 }
 
+ResultType resultTypeFromJson(Object? json) {
+  if (json is int) {
+    return switch (json) {
+      0 => ResultType.success,
+      -1 => ResultType.error,
+      _ => throw ArgumentError.value(
+        json,
+        'json',
+        'Unsupported ResultType value',
+      ),
+    };
+  }
+  if (json is String) {
+    return switch (json) {
+      'success' => ResultType.success,
+      'error' => ResultType.error,
+      _ => throw ArgumentError.value(
+        json,
+        'json',
+        'Unsupported ResultType value',
+      ),
+    };
+  }
+  throw ArgumentError.value(json, 'json', 'Unsupported ResultType value');
+}
+
+int resultTypeToJson(ResultType type) => switch (type) {
+  ResultType.success => 0,
+  ResultType.error => -1,
+};
+
 @freezed
 abstract class ActionResult with _$ActionResult {
   const factory ActionResult({
     required ActionMethod method,
     required dynamic data,
     String? id,
+    @JsonKey(fromJson: resultTypeFromJson, toJson: resultTypeToJson)
     @Default(ResultType.success) ResultType code,
   }) = _ActionResult;
 

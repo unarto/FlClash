@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/core.dart';
@@ -14,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:yaml/yaml.dart';
 
 part 'generated/action.g.dart';
 
@@ -65,15 +67,43 @@ class CommonAction extends _$CommonAction {
   }
 
   Future<void> autoCheckUpdate() async {
-    if (!ref.read(appSettingProvider).autoCheckUpdate) return;
+    final enabled = ref.read(appSettingProvider).autoCheckUpdate;
+    commonPrint.log('[auto-check-update] enabled=$enabled');
+    if (!enabled) {
+      commonPrint.log('[auto-check-update] skip request');
+      return;
+    }
+    commonPrint.log('[auto-check-update] request start');
     final res = await request.checkForUpdate();
-    checkUpdateResultHandle(data: res);
+    commonPrint.log(
+      '[auto-check-update] request done status=${res.status.name}',
+    );
+    checkUpdateResultHandle(result: res);
   }
 
   Future<void> checkUpdateResultHandle({
-    Map<String, dynamic>? data,
+    required CheckForUpdateResult result,
     bool isUser = false,
   }) async {
+    if (result.status == CheckForUpdateStatus.failed) {
+      if (isUser) {
+        globalState.showMessage(
+          title: currentAppLocalizations.checkUpdate,
+          message: TextSpan(text: currentAppLocalizations.checkUpdateError),
+        );
+      }
+      return;
+    }
+    if (result.status == CheckForUpdateStatus.upToDate) {
+      if (isUser) {
+        globalState.showMessage(
+          title: currentAppLocalizations.checkUpdate,
+          message: TextSpan(text: currentAppLocalizations.checkUpdateLatest),
+        );
+      }
+      return;
+    }
+    final data = result.data;
     if (data != null) {
       final tagName = data['tag_name'];
       final body = data['body'];
@@ -101,11 +131,6 @@ class CommonAction extends _$CommonAction {
             .read(appSettingProvider.notifier)
             .update((state) => state.copyWith(autoCheckUpdate: false));
       }
-    } else if (isUser) {
-      globalState.showMessage(
-        title: currentAppLocalizations.checkUpdate,
-        message: TextSpan(text: currentAppLocalizations.checkUpdateError),
-      );
     }
   }
 }
@@ -128,12 +153,13 @@ class SetupAction extends _$SetupAction {
     return SetupParams(selectedMap: selectedMap, testUrl: testUrl);
   }
 
-  void fullSetup() {
-    if (!ref.read(initProvider)) return;
+  Future<bool> fullSetup() async {
+    if (!ref.read(initProvider)) return false;
     ref.read(delayDataSourceProvider.notifier).value = {};
-    applyProfile(force: true);
+    final applied = await applyProfile(force: true);
     ref.read(logsProvider.notifier).value = FixedList(500);
     ref.read(requestsProvider.notifier).value = FixedList(500);
+    return applied;
   }
 
   Future<void> _handleStart() async {
@@ -176,7 +202,25 @@ class SetupAction extends _$SetupAction {
     if (status == true) {
       await updateStatus(true, isInit: true);
     } else {
-      await applyProfile(force: true);
+      final applied = await applyProfile(force: true);
+      if (!applied) {
+        await _fallbackCurrentProfile();
+      }
+    }
+  }
+
+  Future<void> _fallbackCurrentProfile() async {
+    final currentProfileId = ref.read(currentProfileIdProvider);
+    final profiles = ref.read(profilesProvider);
+    for (final profile in profiles) {
+      if (profile.id == currentProfileId) {
+        continue;
+      }
+      ref.read(currentProfileIdProvider.notifier).value = profile.id;
+      final applied = await applyProfile(force: true, silence: true);
+      if (applied) {
+        return;
+      }
     }
   }
 
@@ -263,12 +307,12 @@ class SetupAction extends _$SetupAction {
     });
   }
 
-  Future<void> applyProfile({
+  Future<bool> applyProfile({
     bool silence = false,
     bool force = false,
     VoidCallback? preloadInvoke,
   }) async {
-    await _setupConfig(
+    return _setupConfig(
       force: force,
       silence: silence,
       preloadInvoke: preloadInvoke,
@@ -285,7 +329,7 @@ class SetupAction extends _$SetupAction {
   }) async {
     final profileId = setupState.profileId;
     if (profileId == null) return const VM2('', '');
-    final defaultUA = globalState.packageInfo.ua;
+    final defaultUA = globalState.packageInfo.providerCompatibleUa;
     final networkVM2 = ref.read(
       networkSettingProvider.select(
         (state) => VM2(state.appendSystemDns, state.routeMode),
@@ -366,25 +410,29 @@ class SetupAction extends _$SetupAction {
     return Result.success(enableTun);
   }
 
-  Future<void> _setupConfig({
+  Future<bool> _setupConfig({
     bool force = false,
     bool silence = false,
     VoidCallback? preloadInvoke,
     FutureOr Function()? onUpdated,
   }) async {
     var profile = ref.read(currentProfileProvider);
-    final nextProfile = await profile?.checkAndUpdateAndCopy();
+    if (profile == null) {
+      commonPrint.log('setup skip: no current profile');
+      return false;
+    }
+    final nextProfile = await profile.checkAndUpdateAndCopy();
     if (nextProfile != null) {
       profile = nextProfile;
       ref.read(profilesProvider.notifier).put(nextProfile);
     }
-    commonPrint.log('setup ===> ${profile?.id}');
+    commonPrint.log('setup ===> ${profile.id}');
     final patchConfig = ref.read(patchClashConfigProvider);
     final res = await _requestAdmin(patchConfig.tun.enable);
-    if (res.isError) return;
+    if (res.isError) return false;
     final realTunEnable = ref.read(realTunEnableProvider);
     final realPatchConfig = patchConfig.copyWith.tun(enable: realTunEnable);
-    final setupState = await ref.read(setupStateProvider(profile?.id).future);
+    final setupState = await ref.read(setupStateProvider(profile.id).future);
     if (system.isAndroid) {
       globalState.lastVpnState = ref.read(vpnStateProvider);
       final sharedState = ref.read(sharedStateProvider);
@@ -396,11 +444,43 @@ class SetupAction extends _$SetupAction {
     );
     final yamlString = vm2.a;
     final yamlMd5 = vm2.b;
-    if (yamlMd5 == globalState.lastConfigMd5 && force == false) return;
-    await globalState.loadingRun(
+    try {
+      final yamlMap = loadYaml(yamlString);
+      if (yamlMap is YamlMap) {
+        final raw = jsonDecode(jsonEncode(yamlMap)) as Map<String, dynamic>;
+        final globalUa = raw['global-ua'];
+        final proxyProviders = Map<String, dynamic>.from(
+          raw['proxy-providers'] ?? const {},
+        );
+        final providerSummary = proxyProviders.entries
+            .map((entry) {
+              final value = Map<String, dynamic>.from(
+                entry.value as Map? ?? const {},
+              );
+              return '${entry.key}|${value['type'] ?? ''}|${value['url'] ?? ''}|${value['path'] ?? ''}';
+            })
+            .join('; ');
+        commonPrint.log(
+          '[setup-profile] profile=${profile.id} ua=$globalUa providers=$providerSummary',
+        );
+      }
+    } catch (e) {
+      commonPrint.log(
+        '[setup-profile] summary failed profile=${profile.id} error=$e',
+      );
+    }
+    if (yamlMd5 == globalState.lastConfigMd5 && force == false) return true;
+    final result = await globalState.loadingRun<bool>(
       () async {
         final configFilePath = await appPath.configFilePath;
         await File(configFilePath).safeWriteAsString(yamlString);
+        final configFile = File(configFilePath);
+        final configExists = await configFile.exists();
+        final configLength = configExists ? await configFile.length() : -1;
+        commonPrint.log(
+          '[setup-profile] wrote config path=$configFilePath '
+          'exists=$configExists bytes=$configLength md5=$yamlMd5',
+        );
         globalState.lastConfigMd5 = yamlMd5;
         final message = await coreController.setupConfig(
           setupState: setupState,
@@ -412,10 +492,12 @@ class SetupAction extends _$SetupAction {
         }
         ref.read(checkIpNumProvider.notifier).add();
         await onUpdated?.call();
+        return true;
       },
       silence: true,
       tag: !silence ? LoadingTag.proxies : null,
     );
+    return result == true;
   }
 }
 
@@ -425,6 +507,7 @@ class BackupAction extends _$BackupAction {
   void build() {}
 
   Future<String> backup() async {
+    commonPrint.log('[backup-action] backup start');
     final res = await Future.wait([
       database.profilesDao.fileNames().get(),
       database.scriptsDao.fileNames().get(),
@@ -433,10 +516,16 @@ class BackupAction extends _$BackupAction {
     final scriptFileNames = res[1];
     final configMap = ref.read(configProvider).toJson();
     configMap['version'] = await preferences.getVersion();
-    return backupTask(configMap, [...profileFileNames, ...scriptFileNames]);
+    final backupPath = await backupTask(configMap, [
+      ...profileFileNames,
+      ...scriptFileNames,
+    ]);
+    commonPrint.log('[backup-action] backup done path=$backupPath');
+    return backupPath;
   }
 
   Future<void> restore(RestoreOption option) async {
+    commonPrint.log('[backup-action] restore start option=${option.name}');
     final restoreDirPath = await appPath.restoreDirPath;
     final restoreDir = Directory(restoreDirPath);
     final restoreStrategy = ref.read(
@@ -473,8 +562,16 @@ class BackupAction extends _$BackupAction {
       ref.read(overrideDnsProvider.notifier).value = config.overrideDns;
       ref.read(networkSettingProvider.notifier).value = config.networkProps;
       ref.read(hotKeyActionsProvider.notifier).value = config.hotKeyActions;
+      await preferences.saveConfig(ref.read(configProvider));
+      commonPrint.log(
+        '[backup-action] restore persisted config option=${option.name} openLogs=${ref.read(appSettingProvider).openLogs}',
+      );
+      commonPrint.log(
+        '[backup-action] restore applied config option=${option.name}',
+      );
       return;
     } finally {
+      commonPrint.log('[backup-action] restore cleanup option=${option.name}');
       await restoreDir.safeDelete(recursive: true);
     }
   }
@@ -656,19 +753,51 @@ class StoreAction extends _$StoreAction {
   void build() {}
 
   Future<void> shakingStore() async {
+    commonPrint.log('[developer-mode] shakingStore start');
     final profileIds = ref.read(
       profilesProvider.select((state) => state.map((item) => item.id)),
     );
-    final scriptIds = await ref.read(
-      scriptsProvider.future.select(
-        (state) async => (await state).map((item) => item.id),
+    commonPrint.log(
+      '[developer-mode] shakingStore profileIds=${profileIds.join(",")}',
+    );
+    commonPrint.log(
+      '[developer-mode] shakingStore await scriptsDao.query().get()',
+    );
+    final scripts = await database.scriptsDao.query().get();
+    commonPrint.log(
+      '[developer-mode] shakingStore scripts loaded count=${scripts.length}',
+    );
+    final scriptIds = scripts.map((item) => item.id);
+    commonPrint.log(
+      '[developer-mode] shakingStore scriptIds=${scriptIds.join(",")}',
+    );
+    final profilesPath = await appPath.profilesPath;
+    final scriptsDirPath = await appPath.scriptsDirPath;
+    final providersRootPath = await appPath.getProvidersRootPath();
+    commonPrint.log(
+      '[developer-mode] shakingStore paths profiles=$profilesPath scripts=$scriptsDirPath providers=$providersRootPath',
+    );
+    commonPrint.log('[developer-mode] shakingStore await shakingProfileTask');
+    final pathsToDelete = await shakingProfileTask(
+      VM3(
+        profileIds,
+        scriptIds,
+        VM3(profilesPath, scriptsDirPath, providersRootPath),
       ),
     );
-    final pathsToDelete = await shakingProfileTask(VM2(profileIds, scriptIds));
+    commonPrint.log(
+      '[developer-mode] shakingStore pathsToDelete=${pathsToDelete.length}',
+    );
     if (pathsToDelete.isNotEmpty) {
       final deleteFutures = pathsToDelete.map((path) async {
         try {
+          commonPrint.log(
+            '[developer-mode] shakingStore deleteFile start: $path',
+          );
           final res = await coreController.deleteFile(path);
+          commonPrint.log(
+            '[developer-mode] shakingStore deleteFile done: $path res=$res',
+          );
           if (res.isNotEmpty) throw res;
         } catch (e) {
           rethrow;
@@ -676,6 +805,7 @@ class StoreAction extends _$StoreAction {
       });
       await Future.wait(deleteFutures);
     }
+    commonPrint.log('[developer-mode] shakingStore done');
   }
 
   void savePreferencesDebounce() {
@@ -689,11 +819,36 @@ class StoreAction extends _$StoreAction {
     commonPrint.log('clear preferences');
     await database.close();
     await File(await appPath.databasePath).safeDelete(recursive: true);
-    final homeDir = Directory(await appPath.profilesPath);
-    await for (final file in homeDir.list(recursive: true)) {
-      await coreController.deleteFile(file.path);
-    }
+    final profilesDir = Directory(await appPath.profilesPath);
+    commonPrint.log('[developer-mode] clear profiles dir: ${profilesDir.path}');
+    await profilesDir.safeClear();
     await preferences.clearPreferences();
+    ref.read(patchClashConfigProvider.notifier).value =
+        const PatchClashConfig();
+    ref.read(appSettingProvider.notifier).value = const AppSettingProps();
+    ref.read(currentProfileIdProvider.notifier).value = null;
+    ref.read(davSettingProvider.notifier).value = null;
+    ref.read(themeSettingProvider.notifier).value = const ThemeProps();
+    ref.read(windowSettingProvider.notifier).value = const WindowProps();
+    ref.read(vpnSettingProvider.notifier).value = const VpnProps();
+    ref.read(proxiesStyleSettingProvider.notifier).value =
+        const ProxiesStyleProps();
+    ref.read(overrideDnsProvider.notifier).value = false;
+    ref.read(networkSettingProvider.notifier).value = const NetworkProps();
+    ref.read(hotKeyActionsProvider.notifier).value = [];
+    ref.read(excludeSSIDsProvider.notifier).value = [];
+    ref.read(profilesProvider.notifier).setAndReorder(const []);
+    ref.read(providersProvider.notifier).value = [];
+    ref.read(packagesProvider.notifier).value = [];
+    ref.read(logsProvider.notifier).value = FixedList(0);
+    ref.read(requestsProvider.notifier).value = FixedList(0);
+    ref.read(trafficsProvider.notifier).clear();
+    ref.read(totalTrafficProvider.notifier).value = const Traffic();
+    ref.read(runTimeProvider.notifier).value = null;
+    ref.read(localIpProvider.notifier).value = null;
+    ref.read(currentPageLabelProvider.notifier).value = PageLabel.dashboard;
+    ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
+    globalState.needInitStatus = true;
     ref.read(systemActionProvider.notifier).handleExit(false);
   }
 }
@@ -814,9 +969,14 @@ class ProxiesAction extends _$ProxiesAction {
         providerName: provider.name,
       );
       if (message.isNotEmpty) return message;
+      final updatedProvider = await coreController
+          .waitForExternalProviderUpdate(provider);
       ref
           .read(providersProvider.notifier)
-          .setProvider(await coreController.getExternalProvider(provider.name));
+          .setProvider(
+            updatedProvider ??
+                await coreController.getExternalProvider(provider.name),
+          );
       return '';
     } finally {
       ref.read(isUpdatingProvider(provider.updatingKey).notifier).value = false;
@@ -892,11 +1052,17 @@ class ProfilesAction extends _$ProfilesAction {
     bool showLoading = false,
   }) async {
     try {
+      commonPrint.log(
+        '[profile-sync-action] begin id=${profile.id} label=${profile.realLabel} showLoading=$showLoading type=${profile.type.name} lastUpdate=${profile.lastUpdateDate?.toIso8601String()}',
+      );
       if (showLoading) {
         ref.read(isUpdatingProvider(profile.updatingKey).notifier).value = true;
       }
       ref.read(profilesProvider.notifier).put(profile);
       final newProfile = await profile.update();
+      commonPrint.log(
+        '[profile-sync-action] updated id=${newProfile.id} label=${newProfile.realLabel} lastUpdate=${newProfile.lastUpdateDate?.toIso8601String()}',
+      );
       ref.read(profilesProvider.notifier).put(newProfile);
       if (profile.id == ref.read(currentProfileIdProvider)) {
         ref
@@ -904,14 +1070,25 @@ class ProfilesAction extends _$ProfilesAction {
             .applyProfileDebounce(silence: true);
       }
     } finally {
+      commonPrint.log(
+        '[profile-sync-action] end id=${profile.id} label=${profile.realLabel}',
+      );
       ref.read(isUpdatingProvider(profile.updatingKey).notifier).value = false;
     }
   }
 
   Future<void> addProfileFormFile() async {
+    commonPrint.log('[profile-file-import] start');
     final platformFile = await globalState.safeRun(picker.pickerFile);
     final bytes = platformFile?.bytes;
-    if (bytes == null) return;
+    commonPrint.log(
+      '[profile-file-import] picked name=${platformFile?.name} '
+      'bytes=${bytes?.length ?? 0} path=${platformFile?.path}',
+    );
+    if (bytes == null) {
+      commonPrint.log('[profile-file-import] result: no-bytes');
+      return;
+    }
     globalState.navigatorKey.currentState?.popUntil((route) => route.isFirst);
     ref.read(currentPageLabelProvider.notifier).toProfiles();
     final profile = await globalState.loadingRun(
@@ -922,11 +1099,18 @@ class ProfilesAction extends _$ProfilesAction {
       title: currentAppLocalizations.addProfile,
     );
     if (profile != null) {
+      commonPrint.log(
+        '[profile-file-import] success: id=${profile.id} '
+        'type=${profile.type.name} label=${profile.label}',
+      );
       putProfile(profile);
+    } else {
+      commonPrint.log('[profile-file-import] result: null');
     }
   }
 
   Future<void> addProfileFormURL(String url) async {
+    commonPrint.log('[ohos-profile-url] addProfileFormURL start: $url');
     if (globalState.navigatorKey.currentState?.canPop() ?? false) {
       globalState.navigatorKey.currentState?.popUntil((route) => route.isFirst);
     }
@@ -939,7 +1123,12 @@ class ProfilesAction extends _$ProfilesAction {
       title: currentAppLocalizations.addProfile,
     );
     if (profile != null) {
+      commonPrint.log(
+        '[ohos-profile-url] addProfileFormURL success: id=${profile.id} type=${profile.type.name} label=${profile.label}',
+      );
       putProfile(profile);
+    } else {
+      commonPrint.log('[ohos-profile-url] addProfileFormURL result: null');
     }
   }
 

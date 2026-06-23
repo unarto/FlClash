@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:archive/archive_io.dart';
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
+import 'package:drift/native.dart';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/database/database.dart';
 import 'package:fl_clash/enum/enum.dart';
@@ -12,6 +14,8 @@ import 'package:fl_clash/models/models.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart';
+import 'package:sqlite3/open.dart' as sqlite_open;
+import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
 Future<T> decodeJSONTask<T>(String data) async {
   return compute<String, T>(_decodeJSON, data);
@@ -72,6 +76,23 @@ Future<List<Group>> _toGroupsTask(ComputeGroupsState state) async {
         return group;
       })
       .toList();
+  if (groupsRaw.isNotEmpty) {
+    final groupSummaries = groupsRaw.map((group) {
+      final name = group['name'] ?? '';
+      final items = (group['all'] as List?) ?? const [];
+      final sample = items
+          .take(5)
+          .map((item) => (item as Map?)?['name']?.toString() ?? '')
+          .where((item) => item.isNotEmpty)
+          .join('|');
+      return '$name:${items.length}[$sample]';
+    }).join('; ');
+    commonPrint.log('[proxy-debug] toGroupsTask rawGroups $groupSummaries');
+  } else {
+    commonPrint.log(
+      '[proxy-debug] toGroupsTask rawGroups empty all=${all.length} keys=${proxies.length}',
+    );
+  }
   final groups = groupsRaw.map((e) => Group.fromJson(e)).toList();
   return computeSort(
     groups: groups,
@@ -272,24 +293,40 @@ Future<VM2<String, String>> _makeRealProfileTask(
 }
 
 Future<List<String>> shakingProfileTask(
-  VM2<Iterable<int>, Iterable<int>> data,
+  VM3<Iterable<int>, Iterable<int>, VM3<String, String, String>> data,
 ) async {
   return compute<
-    VM3<Iterable<int>, Iterable<int>, RootIsolateToken>,
+    VM4<
+      Iterable<int>,
+      Iterable<int>,
+      VM3<String, String, String>,
+      RootIsolateToken
+    >,
     List<String>
-  >(_shakingProfileTask, VM3(data.a, data.b, RootIsolateToken.instance!));
+  >(
+    _shakingProfileTask,
+    VM4(data.a, data.b, data.c, RootIsolateToken.instance!),
+  );
 }
 
 Future<List<String>> _shakingProfileTask(
-  VM3<Iterable<int>, Iterable<int>, RootIsolateToken> data,
+  VM4<
+    Iterable<int>,
+    Iterable<int>,
+    VM3<String, String, String>,
+    RootIsolateToken
+  > data,
 ) async {
   final profileIds = data.a;
   final scriptIds = data.b;
-  final token = data.c;
+  final profilesPath = data.c.a;
+  final scriptsDirPath = data.c.b;
+  final providersRootPath = data.c.c;
+  final token = data.d;
   BackgroundIsolateBinaryMessenger.ensureInitialized(token);
-  final profilesDir = Directory(await appPath.profilesPath);
-  final scriptsDir = Directory(await appPath.scriptsDirPath);
-  final providersDir = Directory(await appPath.getProvidersRootPath());
+  final profilesDir = Directory(profilesPath);
+  final scriptsDir = Directory(scriptsDirPath);
+  final providersDir = Directory(providersRootPath);
   final List<String> targets = [];
   void scanDirectory(
     Directory dir,
@@ -331,10 +368,10 @@ Future<String> _encodeLogsTask(List<Log> data) async {
 
 Future<MigrationData> oldToNowTask(Map<String, Object?> data) async {
   final homeDir = await appPath.homeDirPath;
-  return compute<
-    VM3<Map<String, Object?>, String, String>,
-    MigrationData
-  >(_oldToNowTask, VM3(data, homeDir, homeDir));
+  return compute<VM3<Map<String, Object?>, String, String>, MigrationData>(
+    _oldToNowTask,
+    VM3(data, homeDir, homeDir),
+  );
 }
 
 Future<MigrationData> _oldToNowTask(
@@ -473,33 +510,50 @@ Future<String> backupTask(
   Map<String, dynamic> configMap,
   Iterable<String> fileNames,
 ) async {
-  return compute<
-    VM3<Map<String, dynamic>, Iterable<String>, RootIsolateToken>,
-    String
-  >(_backupTask, VM3(configMap, fileNames, RootIsolateToken.instance!));
+  final tempRootPath = await appPath.tempPath;
+  final args = <String, dynamic>{
+    'configMap': configMap,
+    'fileNames': fileNames.toList(),
+    'dbPath': await appPath.databasePath,
+    'profilesPath': await appPath.profilesPath,
+    'scriptsPath': await appPath.scriptsDirPath,
+    'tempZipFilePath': join(tempRootPath, 'backup-${utils.id}.zip'),
+    'tempDBFilePath': join(tempRootPath, 'backup-${utils.id}.db'),
+    'tempConfigFilePath': join(tempRootPath, 'backup-${utils.id}.json'),
+  };
+  return compute<VM2<Map<String, dynamic>, RootIsolateToken>, String>(
+    _backupTask,
+    VM2(args, RootIsolateToken.instance!),
+  );
 }
 
-Future<String> _backupTask<T>(
-  VM3<Map<String, dynamic>, Iterable<String>, RootIsolateToken> args,
+Future<String> _backupTask(
+  VM2<Map<String, dynamic>, RootIsolateToken> args,
 ) async {
-  final configMap = args.a;
-  final fileNames = args.b;
-  final token = args.c;
+  final params = args.a;
+  final token = args.b;
   BackgroundIsolateBinaryMessenger.ensureInitialized(token);
-  final dbPath = await appPath.databasePath;
+  final configMap = Map<String, dynamic>.from(params['configMap'] as Map);
+  final fileNames = (params['fileNames'] as List).cast<String>();
+  commonPrint.log('[backup-task] start files=${fileNames.length}');
+  final dbPath = params['dbPath'] as String;
   final configStr = json.encode(configMap);
-  final profilesDir = Directory(await appPath.profilesPath);
-  final scriptsDir = Directory(await appPath.scriptsDirPath);
-  final tempZipFilePath = await appPath.tempFilePath;
-  final tempDBFile = File(await appPath.tempFilePath);
-  final tempConfigFile = File(await appPath.tempFilePath);
+  final profilesDir = Directory(params['profilesPath'] as String);
+  final scriptsDir = Directory(params['scriptsPath'] as String);
+  final tempZipFilePath = params['tempZipFilePath'] as String;
+  final tempDBFile = File(params['tempDBFilePath'] as String);
+  final tempConfigFile = File(params['tempConfigFilePath'] as String);
   final dbFile = File(dbPath);
   if (await dbFile.exists()) {
     await dbFile.copy(tempDBFile.path);
   }
   final encoder = ZipFileEncoder();
+  commonPrint.log('[backup-task] create zip path=$tempZipFilePath');
   encoder.create(tempZipFilePath);
   await tempConfigFile.writeAsString(configStr);
+  commonPrint.log(
+    '[backup-task] config file path=${tempConfigFile.path} size=${await tempConfigFile.length()}',
+  );
   await encoder.addFile(tempDBFile, backupDatabaseName);
   await encoder.addFile(tempConfigFile, configJsonName);
   if (await profilesDir.exists()) {
@@ -525,38 +579,82 @@ Future<String> _backupTask<T>(
     );
   }
   encoder.close();
+  commonPrint.log('[backup-task] zip completed path=$tempZipFilePath');
+  try {
+    final backupBytes = await File(tempZipFilePath).readAsBytes();
+    final backupArchive = ZipDecoder().decodeBytes(backupBytes);
+    final backupEntries = backupArchive.files
+        .map((item) => '${item.name}:${item.isFile ? 'file' : 'dir'}')
+        .join(', ');
+    commonPrint.log(
+      '[zip-verify] backup archive entries=${backupArchive.files.length} [$backupEntries]',
+    );
+  } catch (error) {
+    commonPrint.log('[zip-verify] backup archive inspect failed: $error');
+  }
   await tempConfigFile.safeDelete();
   await tempDBFile.safeDelete();
+  commonPrint.log('[backup-task] cleanup done path=$tempZipFilePath');
   return tempZipFilePath;
 }
 
 Future<MigrationData> restoreTask() async {
-  return compute<RootIsolateToken, MigrationData>(
+  final args = <String, String>{
+    'backupFilePath': await appPath.backupFilePath,
+    'restoreDirPath': await appPath.restoreDirPath,
+    'homeDirPath': await appPath.homeDirPath,
+  };
+  return compute<VM2<Map<String, String>, RootIsolateToken>, MigrationData>(
     _restoreTask,
-    RootIsolateToken.instance!,
+    VM2(args, RootIsolateToken.instance!),
   );
 }
 
-Future<MigrationData> _restoreTask(RootIsolateToken token) async {
+Future<MigrationData> _restoreTask(
+  VM2<Map<String, String>, RootIsolateToken> args,
+) async {
+  final params = args.a;
+  final token = args.b;
   BackgroundIsolateBinaryMessenger.ensureInitialized(token);
-  final backupFilePath = await appPath.backupFilePath;
-  final restoreDirPath = await appPath.restoreDirPath;
-  final homeDirPath = await appPath.homeDirPath;
+  final backupFilePath = params['backupFilePath']!;
+  final restoreDirPath = params['restoreDirPath']!;
+  final homeDirPath = params['homeDirPath']!;
+  commonPrint.log('[restore-task] start backupFilePath=$backupFilePath');
   final zipDecoder = ZipDecoder();
   final input = InputFileStream(backupFilePath);
+  commonPrint.log('[restore-task] input stream opened');
   final archive = zipDecoder.decodeStream(input);
+  commonPrint.log(
+    '[restore-task] archive decoded files=${archive.files.length}',
+  );
   final dir = Directory(restoreDirPath);
   await dir.create(recursive: true);
   for (final file in archive.files) {
-    final outPath = join(restoreDirPath, posix.normalize(file.name));
-    final outputStream = OutputFileStream(outPath);
-    file.writeContent(outputStream);
-    await outputStream.close();
+    final normalizedPath = posix.normalize(file.name);
+    commonPrint.log(
+      '[restore-task] entry raw=${file.name} normalized=$normalizedPath isFile=${file.isFile}',
+    );
+    if (normalizedPath.isEmpty ||
+        normalizedPath == '.' ||
+        normalizedPath == '..') {
+      continue;
+    }
+    final outPath = join(restoreDirPath, normalizedPath);
+    if (file.isFile && !normalizedPath.endsWith('/')) {
+      await Directory(dirname(outPath)).create(recursive: true);
+      final outputStream = OutputFileStream(outPath);
+      file.writeContent(outputStream);
+      await outputStream.close();
+      continue;
+    }
+    await Directory(outPath).create(recursive: true);
   }
   await input.close();
+  commonPrint.log('[restore-task] archive extracted dir=$restoreDirPath');
   final restoreConfigFile = File(join(restoreDirPath, configJsonName));
   if (!await restoreConfigFile.exists()) {
-    throw currentAppLocalizations.invalidBackupFile;
+    commonPrint.log('[restore-task] missing restore config file');
+    throw StateError('invalid backup file');
   }
   final restoreConfigMap =
       json.decode(await restoreConfigFile.readAsString())
@@ -571,16 +669,16 @@ Future<MigrationData> _restoreTask(RootIsolateToken token) async {
   }
   final backupDatabaseFile = File(join(restoreDirPath, backupDatabaseName));
   if (!await backupDatabaseFile.exists()) {
+    commonPrint.log(
+      '[restore-task] no backup database file, returning config only',
+    );
     return migrationData;
   }
-  final database = Database(
-    driftDatabase(
-      name: 'database',
-      native: DriftNativeOptions(
-        databaseDirectory: () async => Directory(restoreDirPath),
-      ),
-    ),
-  );
+  if (system.isOhos) {
+    sqlite_open.open.overrideForAll(() => DynamicLibrary.open('libsqlite3.so'));
+    sqlite3.sqlite3.tempDirectory = '/data/storage/el2/base/temp';
+  }
+  final database = Database(NativeDatabase(backupDatabaseFile));
   final results = await Future.wait([
     database.profilesDao.query().get(),
     database.scriptsDao.query().get(),
@@ -611,6 +709,7 @@ Future<MigrationData> _restoreTask(RootIsolateToken token) async {
     proxyGroups: results[4].cast<ProxyGroup>(),
   );
   await database.close();
+  commonPrint.log('[restore-task] database migration completed');
   return migrationData;
 }
 

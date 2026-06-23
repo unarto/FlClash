@@ -1,5 +1,6 @@
 /node_modules
 /oh_modules
+/.sdk
 /local.properties
 /package-lock.json
 /dta

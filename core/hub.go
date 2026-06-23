@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/common/observable"
@@ -22,6 +23,7 @@ import (
 	"github.com/metacubex/mihomo/tunnel/statistic"
 	"golang.org/x/exp/slices"
 	"net"
+	"regexp"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -41,10 +43,12 @@ func handleInitClash(paramsString string) bool {
 	var params = InitParams{}
 	err := json.Unmarshal([]byte(paramsString), &params)
 	if err != nil {
+		debugCoreLog("handleInitClash unmarshal failed err=%v payload=%s", err, paramsString)
 		return false
 	}
 	version = params.Version
 	constant.SetHomeDir(params.HomeDir)
+	debugCoreLog("handleInitClash homeDir=%s version=%d", params.HomeDir, params.Version)
 	isInit = true
 	return isInit
 }
@@ -88,10 +92,64 @@ func handleShutdown() bool {
 }
 
 func handleValidateConfig(path string) string {
-	buf, err := readFile(path)
-	_, err = config.UnmarshalRawConfig(buf)
+	_, err := executor.ParseWithPath(path)
 	if err != nil {
-		return err.Error()
+		message := err.Error()
+		matches := regexp.MustCompile(`(proxy|listener)\s+(\d+):`).FindStringSubmatch(message)
+		if len(matches) == 3 {
+			kind := matches[1]
+			if index, convErr := strconv.Atoi(matches[2]); convErr == nil {
+				if buf, readErr := os.ReadFile(path); readErr == nil {
+					if rawCfg, unmarshalErr := config.UnmarshalRawConfig(buf); unmarshalErr == nil {
+						if kind == "proxy" && index >= 0 && index < len(rawCfg.Proxy) {
+							mapping := rawCfg.Proxy[index]
+							name, _ := mapping["name"].(string)
+							proxyType, _ := mapping["type"].(string)
+							plugin, _ := mapping["plugin"].(string)
+							pluginOptKeys := []string{}
+							mappingJSON := ""
+							if pluginOpts, ok := mapping["plugin-opts"].(map[string]any); ok {
+								for key := range pluginOpts {
+									pluginOptKeys = append(pluginOptKeys, key)
+								}
+								slices.Sort(pluginOptKeys)
+							}
+							if encoded, marshalErr := json.Marshal(mapping); marshalErr == nil {
+								mappingJSON = string(encoded)
+							}
+							return fmt.Sprintf(
+								"proxy %d (%s type=%s plugin=%s plugin-opts=%v mapping=%s): %s",
+								index,
+								name,
+								proxyType,
+								plugin,
+								pluginOptKeys,
+								mappingJSON,
+								message,
+							)
+						}
+						if kind == "listener" && index >= 0 && index < len(rawCfg.Listeners) {
+							mapping := rawCfg.Listeners[index]
+							name, _ := mapping["name"].(string)
+							listenerType, _ := mapping["type"].(string)
+							mappingJSON := ""
+							if encoded, marshalErr := json.Marshal(mapping); marshalErr == nil {
+								mappingJSON = string(encoded)
+							}
+							return fmt.Sprintf(
+								"listener %d (%s type=%s mapping=%s): %s",
+								index,
+								name,
+								listenerType,
+								mappingJSON,
+								message,
+							)
+						}
+					}
+				}
+			}
+		}
+		return message
 	}
 	return ""
 }
@@ -264,6 +322,13 @@ func handleGetConnections() string {
 	runLock.Lock()
 	defer runLock.Unlock()
 	snapshot := statistic.DefaultManager.Snapshot()
+	log.Infoln(
+		"[APP] getConnections snapshot connections=%d uploadTotal=%d downloadTotal=%d memory=%d",
+		len(snapshot.Connections),
+		snapshot.UploadTotal,
+		snapshot.DownloadTotal,
+		snapshot.Memory,
+	)
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		logError("Error: %s", err)
@@ -557,6 +622,21 @@ func init() {
 		})
 	}
 	statistic.DefaultRequestNotify = func(c statistic.Tracker) {
+		info := c.Info()
+		if info != nil && info.Metadata != nil {
+			log.Infoln(
+				"[APP] request notify id=%s network=%s host=%s dst=%s:%d chains=%v rule=%s",
+				c.ID(),
+				info.Metadata.NetWork.String(),
+				info.Metadata.Host,
+				info.Metadata.DstIP.String(),
+				info.Metadata.DstPort,
+				info.Chain,
+				info.Rule,
+			)
+		} else {
+			log.Infoln("[APP] request notify id=%s metadata=nil", c.ID())
+		}
 		sendMessage(Message{
 			Type: RequestMessage,
 			Data: c,

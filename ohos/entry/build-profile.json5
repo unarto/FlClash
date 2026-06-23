@@ -2,11 +2,23 @@
 {
   "apiType": 'stageMode',
   "buildOption": {
+    "arkOptions": {
+      "runtimeOnly": {
+        "packages": [
+          "libentry.so",
+        ],
+      },
+    },
+    "externalNativeOptions": {
+      "path": "./src/main/cpp/CMakeLists.txt",
+      "arguments": "",
+      "cppFlags": "",
+    },
   },
   "targets": [
     {
       "name": "default",
-      "runtimeOS": "HarmonyOS"
+      "runtimeOS": "OpenHarmony"
     },
     {
       "name": "ohosTest",

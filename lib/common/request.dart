@@ -10,18 +10,81 @@ import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/state.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+
+String subscriptionRequestUserAgent(PackageInfo packageInfo) {
+  return packageInfo.providerCompatibleUa;
+}
+
+String currentSubscriptionRequestUserAgent() {
+  return subscriptionRequestUserAgent(globalState.packageInfo);
+}
+
+enum CheckForUpdateStatus { available, upToDate, failed }
+
+@immutable
+class CheckForUpdateResult {
+  final CheckForUpdateStatus status;
+  final Map<String, dynamic>? data;
+
+  const CheckForUpdateResult._(this.status, {this.data});
+
+  const CheckForUpdateResult.available(Map<String, dynamic> data)
+    : this._(CheckForUpdateStatus.available, data: data);
+
+  const CheckForUpdateResult.upToDate() : this._(CheckForUpdateStatus.upToDate);
+
+  const CheckForUpdateResult.failed() : this._(CheckForUpdateStatus.failed);
+}
+
+CheckForUpdateResult parseCheckForUpdateResponse({
+  required Map<String, dynamic> data,
+  required String version,
+}) {
+  final remoteVersion = data['tag_name'] as String? ?? '';
+  final hasUpdate =
+      utils.compareVersions(remoteVersion.replaceAll('v', ''), version) > 0;
+  commonPrint.log(
+    '[check-update] compare local=$version remote=$remoteVersion hasUpdate=$hasUpdate',
+  );
+  if (!hasUpdate) {
+    return const CheckForUpdateResult.upToDate();
+  }
+  return CheckForUpdateResult.available(data);
+}
 
 class Request {
   late final Dio dio;
   late final Dio _clashDio;
+  late final Dio _directDio;
   String? userAgent;
 
   Request() {
     dio = Dio(BaseOptions(headers: {'User-Agent': browserUa}));
+    _directDio = Dio(
+      BaseOptions(
+        headers: {'User-Agent': browserUa},
+        connectTimeout: const Duration(seconds: 20),
+        receiveTimeout: const Duration(seconds: 20),
+        sendTimeout: const Duration(seconds: 20),
+      ),
+    );
+    _directDio.httpClientAdapter = IOHttpClientAdapter(
+      createHttpClient: () {
+        final client = HttpClient();
+        client.badCertificateCallback = (_, _, _) => true;
+        client.findProxy = (_) {
+          client.userAgent = globalState.ua;
+          return 'DIRECT';
+        };
+        return client;
+      },
+    );
     _clashDio = Dio();
     _clashDio.httpClientAdapter = IOHttpClientAdapter(
       createHttpClient: () {
         final client = HttpClient();
+        client.badCertificateCallback = (_, _, _) => true;
         client.findProxy = (Uri uri) {
           client.userAgent = globalState.ua;
           return FlClashHttpOverrides.handleFindProxy(uri);
@@ -31,18 +94,46 @@ class Request {
     );
   }
 
-  Future<Response<Uint8List>> getFileResponseForUrl(String url) async {
+  Future<Response<Uint8List>> getFileResponseForUrl(
+    String url, {
+    bool direct = false,
+    String? userAgent,
+    bool subscriptionCompatible = false,
+  }) async {
+    final client = direct ? _directDio : _clashDio;
+    final resolvedUserAgent =
+        userAgent ??
+        (subscriptionCompatible ? currentSubscriptionRequestUserAgent() : null);
     try {
-      return await _clashDio.get<Uint8List>(
+      commonPrint.log('getFileResponseForUrl start direct=$direct url=$url');
+      final response = await client.get<Uint8List>(
         url,
-        options: Options(responseType: ResponseType.bytes),
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: resolvedUserAgent == null
+              ? null
+              : {'User-Agent': resolvedUserAgent},
+        ),
       );
+      commonPrint.log(
+        'getFileResponseForUrl done direct=$direct status=${response.statusCode} bytes=${response.data?.length ?? 0}',
+      );
+      return response;
     } catch (e) {
-      commonPrint.log('getFileResponseForUrl error ${e.toString()}');
+      commonPrint.log(
+        'getFileResponseForUrl error direct=$direct ${e.toString()}',
+      );
       if (e is DioException) {
+        commonPrint.log(
+          'getFileResponseForUrl dio direct=$direct type=${e.type} message=${e.message} response=${e.response?.statusCode}',
+        );
         if (e.type == DioExceptionType.unknown) {
           throw currentAppLocalizations.unknownNetworkError;
         } else if (e.type == DioExceptionType.badResponse) {
+          throw currentAppLocalizations.networkException;
+        } else if (e.type == DioExceptionType.connectionTimeout ||
+            e.type == DioExceptionType.receiveTimeout ||
+            e.type == DioExceptionType.sendTimeout) {
           throw currentAppLocalizations.networkException;
         }
         rethrow;
@@ -51,8 +142,12 @@ class Request {
     }
   }
 
-  Future<Response<String>> getTextResponseForUrl(String url) async {
-    final response = await _clashDio.get<String>(
+  Future<Response<String>> getTextResponseForUrl(
+    String url, {
+    bool direct = false,
+  }) async {
+    final client = direct ? _directDio : _clashDio;
+    final response = await client.get<String>(
       url,
       options: Options(responseType: ResponseType.plain),
     );
@@ -70,23 +165,33 @@ class Request {
     return MemoryImage(data);
   }
 
-  Future<Map<String, dynamic>?> checkForUpdate() async {
+  Future<CheckForUpdateResult> checkForUpdate() async {
+    const url = 'https://api.github.com/repos/$repository/releases/latest';
+    commonPrint.log('[check-update] request start url=$url');
     try {
       final response = await dio.get(
-        'https://api.github.com/repos/$repository/releases/latest',
+        url,
         options: Options(responseType: ResponseType.json),
       );
-      if (response.statusCode != 200) return null;
+      commonPrint.log('[check-update] response status=${response.statusCode}');
+      if (response.statusCode != 200) {
+        commonPrint.log(
+          '[check-update] unexpected status=${response.statusCode}',
+          logLevel: LogLevel.warning,
+        );
+        return const CheckForUpdateResult.failed();
+      }
       final data = response.data as Map<String, dynamic>;
-      final remoteVersion = data['tag_name'];
-      final version = globalState.packageInfo.version;
-      final hasUpdate =
-          utils.compareVersions(remoteVersion.replaceAll('v', ''), version) > 0;
-      if (!hasUpdate) return null;
-      return data;
+      return parseCheckForUpdateResponse(
+        data: data,
+        version: globalState.packageInfo.version,
+      );
     } catch (e) {
-      commonPrint.log('checkForUpdate failed', logLevel: LogLevel.warning);
-      return null;
+      commonPrint.log(
+        '[check-update] request failed error=$e',
+        logLevel: LogLevel.warning,
+      );
+      return const CheckForUpdateResult.failed();
     }
   }
 
@@ -113,30 +218,30 @@ class Request {
 
       final future = dio
           .get<Map<String, dynamic>>(
-        source.key,
-        cancelToken: token,
-        options: Options(responseType: ResponseType.json),
-      )
+            source.key,
+            cancelToken: token,
+            options: Options(responseType: ResponseType.json),
+          )
           .timeout(const Duration(seconds: 10));
       future
           .then((res) {
-        if (res.statusCode == HttpStatus.ok && res.data != null) {
-          completer.complete(Result.success(source.value(res.data!)));
-          return;
-        }
-        commonPrint.log('checkIp data empty', logLevel: LogLevel.info);
-        failureCount++;
-        handleFailRes();
-      })
+            if (res.statusCode == HttpStatus.ok && res.data != null) {
+              completer.complete(Result.success(source.value(res.data!)));
+              return;
+            }
+            commonPrint.log('checkIp data empty', logLevel: LogLevel.info);
+            failureCount++;
+            handleFailRes();
+          })
           .catchError((e) {
-        failureCount++;
-        if (e is DioException && e.type == DioExceptionType.cancel) {
-          completer.complete(Result.error('cancelled'));
-          return;
-        }
-        commonPrint.log('checkIp error $e', logLevel: LogLevel.warning);
-        handleFailRes();
-      });
+            failureCount++;
+            if (e is DioException && e.type == DioExceptionType.cancel) {
+              completer.complete(Result.error('cancelled'));
+              return;
+            }
+            commonPrint.log('checkIp error $e', logLevel: LogLevel.warning);
+            handleFailRes();
+          });
       return completer.future;
     });
     final res = await Future.any(futures);
@@ -149,9 +254,9 @@ class Request {
     try {
       final response = await dio
           .get(
-        'http://$localhost:$helperPort/ping',
-        options: Options(responseType: ResponseType.plain),
-      )
+            'http://$localhost:$helperPort/ping',
+            options: Options(responseType: ResponseType.plain),
+          )
           .timeout(const Duration(milliseconds: 2000));
       if (response.statusCode != HttpStatus.ok) {
         return false;
@@ -166,10 +271,10 @@ class Request {
     try {
       final response = await dio
           .post(
-        'http://$localhost:$helperPort/start',
-        data: json.encode({'path': appPath.corePath, 'arg': arg}),
-        options: Options(responseType: ResponseType.plain),
-      )
+            'http://$localhost:$helperPort/start',
+            data: json.encode({'path': appPath.corePath, 'arg': arg}),
+            options: Options(responseType: ResponseType.plain),
+          )
           .timeout(const Duration(milliseconds: 2000));
       if (response.statusCode != HttpStatus.ok) {
         return false;
@@ -185,9 +290,9 @@ class Request {
     try {
       final response = await dio
           .post(
-        'http://$localhost:$helperPort/stop',
-        options: Options(responseType: ResponseType.plain),
-      )
+            'http://$localhost:$helperPort/stop',
+            options: Options(responseType: ResponseType.plain),
+          )
           .timeout(const Duration(milliseconds: 2000));
       if (response.statusCode != HttpStatus.ok) {
         return false;

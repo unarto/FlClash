@@ -209,8 +209,11 @@ class MessageLookup extends MessageLookupByLibrary {
       "Отменить выбор всего",
     ),
     "checkUpdate": MessageLookupByLibrary.simpleMessage("Проверить обновления"),
-    "checkUpdateError": MessageLookupByLibrary.simpleMessage(
+    "checkUpdateLatest": MessageLookupByLibrary.simpleMessage(
       "Текущее приложение уже является последней версией",
+    ),
+    "checkUpdateError": MessageLookupByLibrary.simpleMessage(
+      "Не удалось проверить обновления. Повторите попытку позже.",
     ),
     "clearData": MessageLookupByLibrary.simpleMessage("Очистить данные"),
     "clipboardExport": MessageLookupByLibrary.simpleMessage(

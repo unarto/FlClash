@@ -31,9 +31,28 @@ class _CoreContainerState extends ConsumerState<CoreManager>
     super.initState();
     coreEventManager.addListener(this);
     ref.listenManual(currentProfileIdProvider, (prev, next) {
+      commonPrint.log(
+        '[profile-select-core] currentProfileId changed prev=$prev next=$next',
+      );
       if (prev != next) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          ref.read(setupActionProvider.notifier).fullSetup();
+          () async {
+            commonPrint.log(
+              '[profile-select-core] fullSetup begin prev=$prev next=$next',
+            );
+            final applied = await ref
+                .read(setupActionProvider.notifier)
+                .fullSetup();
+            commonPrint.log(
+              '[profile-select-core] fullSetup end prev=$prev next=$next applied=$applied current=${ref.read(currentProfileIdProvider)}',
+            );
+            if (!applied && prev != null) {
+              commonPrint.log(
+                '[profile-select-core] revert currentProfileId to prev=$prev',
+              );
+              ref.read(currentProfileIdProvider.notifier).value = prev;
+            }
+          }();
         });
       }
     });
@@ -81,7 +100,11 @@ class _CoreContainerState extends ConsumerState<CoreManager>
 
   @override
   void onRequest(TrackerInfo trackerInfo) async {
-    ref.read(requestsProvider.notifier).addRequest(trackerInfo);
+    final requestsNotifier = ref.read(requestsProvider.notifier);
+    requestsNotifier.addRequest(trackerInfo);
+    commonPrint.log(
+      '[OHOS-CORE] onRequest stored id=${trackerInfo.id} host=${trackerInfo.metadata.host} requests=${ref.read(requestsProvider).length}',
+    );
     super.onRequest(trackerInfo);
   }
 

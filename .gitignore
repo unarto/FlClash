@@ -36,6 +36,7 @@ migrate_working_dir/
 /ohos/hvigor/.signing
 /build/
 /dist/
+/.ohos_toolchain/
 
 # Symbolication related
 app.*.symbols

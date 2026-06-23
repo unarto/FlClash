@@ -54,7 +54,9 @@ class ApplicationState extends ConsumerState<Application> {
       }
       _autoUpdateProfilesTask();
       _initLink();
-      app?.initShortcuts();
+      if (system.isAndroid) {
+        app?.initShortcuts();
+      }
     });
   }
 

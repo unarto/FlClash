@@ -1,6 +1,7 @@
 import 'dart:ffi';
 import 'dart:io';
 
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:ffi/ffi.dart';
 import 'package:fl_clash/common/common.dart';
@@ -29,24 +30,43 @@ class System {
 
   bool get isAndroid => Platform.isAndroid;
 
-  bool get isOhos => Platform.operatingSystem == 'ohos';
+  bool get isOhos =>
+      const String.fromEnvironment('TARGET_PLATFORM') == 'ohos' ||
+      Platform.operatingSystem == 'ohos';
 
-  bool get isMobile => isAndroid;
+  bool get isMobile => isAndroid || isOhos;
 
   bool get isLinux => Platform.isLinux;
 
   Future<int> get version async {
+    if (isOhos) {
+      return 0;
+    }
     final deviceInfo = await DeviceInfoPlugin().deviceInfo;
     return switch (Platform.operatingSystem) {
       'macos' => (deviceInfo as MacOsDeviceInfo).majorVersion,
       'android' => (deviceInfo as AndroidDeviceInfo).version.sdkInt,
       'windows' => (deviceInfo as WindowsDeviceInfo).majorVersion,
-      'ohos' => 0,
       String() => 0,
     };
   }
 
+  Future<PackageInfo> getPackageInfo() async {
+    if (isOhos) {
+      return PackageInfo(
+        appName: appName,
+        packageName: packageName,
+        version: '0.8.93',
+        buildNumber: '2026052901',
+      );
+    }
+    return PackageInfo.fromPlatform();
+  }
+
   Future<bool> checkIsAdmin() async {
+    if (isOhos) {
+      return false;
+    }
     final corePath = appPath.corePath.replaceAll(' ', '\\\\ ');
     if (system.isWindows) {
       final result = await windows?.checkService();
@@ -74,7 +94,7 @@ class System {
   }
 
   Future<AuthorizeCode> authorizeCore() async {
-    if (system.isAndroid) {
+    if (system.isAndroid || system.isOhos) {
       return AuthorizeCode.error;
     }
     final isAdmin = await checkIsAdmin();
@@ -135,6 +155,12 @@ class System {
   }
 
   Future<void> exit() async {
+    if (system.isOhos) {
+      final exited = await app?.exitApp();
+      if (exited == true) {
+        return;
+      }
+    }
     if (system.isAndroid) {
       await SystemNavigator.pop();
     }

@@ -169,5 +169,28 @@ void main() {
       expect(state.list.length, 1);
       expect(state.list[0].id, '2');
     });
+
+    test('TrackerInfo.fromJson tolerates mihomo numeric ports', () {
+      final tracker = TrackerInfo.fromJson({
+        'id': '550e8400-e29b-41d4-a716-446655440000',
+        'upload': 1,
+        'download': 2,
+        'start': '2026-06-18T10:11:12Z',
+        'metadata': {
+          'network': 'tcp',
+          'sourcePort': 12345,
+          'destinationPort': 443,
+          'uid': 1000,
+          'process': 'com.example.app',
+        },
+        'chains': ['Proxy', 'NodeA'],
+        'rule': 'MATCH',
+        'rulePayload': '',
+      });
+      expect(tracker.metadata.sourcePort, '12345');
+      expect(tracker.metadata.destinationPort, '443');
+      expect(tracker.metadata.uid, 1000);
+      expect(tracker.chains, ['Proxy', 'NodeA']);
+    });
   });
 }

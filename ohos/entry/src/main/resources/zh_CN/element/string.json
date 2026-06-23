@@ -11,6 +11,14 @@
     {
       "name": "EntryAbility_label",
       "value": "FlClash"
+    },
+    {
+      "name": "internet_permission_reason",
+      "value": "允许 FlClash 下载订阅并执行网络测试。"
+    },
+    {
+      "name": "file_access_persist_permission_reason",
+      "value": "允许 FlClash 持续访问用户选择的配置文件。"
     }
   ]
 }

@@ -164,6 +164,10 @@ func (result ActionResult) send() {
 	if err != nil {
 		return
 	}
+	if result.callback == nil {
+		send(data)
+		return
+	}
 	invokeResult(result.callback, string(data))
 	if result.Method != messageMethod {
 		releaseObject(result.callback)
@@ -247,6 +251,14 @@ func getTraffic(onlyStatisticsProxy bool) *C.char {
 }
 
 func sendMessage(message Message) {
+	if conn != nil {
+		result := ActionResult{
+			Method: messageMethod,
+			Data:   message,
+		}
+		result.send()
+		return
+	}
 	if eventListener == nil {
 		return
 	}
@@ -279,4 +291,12 @@ func forceGC() {
 //export updateDns
 func updateDns(s *C.char) {
 	handleUpdateDns(takeCString(s))
+}
+
+//export freeCString
+func freeCString(s *C.char) {
+	if s == nil {
+		return
+	}
+	C.free(unsafe.Pointer(s))
 }

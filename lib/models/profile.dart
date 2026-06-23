@@ -4,7 +4,9 @@ import 'dart:typed_data';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/enum/enum.dart';
+import 'package:flutter/foundation.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
+import 'package:path/path.dart' show join;
 
 import 'clash_config.dart';
 
@@ -150,6 +152,542 @@ extension ProfilesExt on List<Profile> {
 }
 
 extension ProfileExtension on Profile {
+  static final RegExp _emptyCertificateFieldLinePattern = RegExp(
+    r'(^|\n)([ \t]*)(certificate|private-key)\s*:\s*(?:#.*)?(?=\n|$)',
+    multiLine: true,
+  );
+
+  static String _expandIndentedBlock(String indent, String block) {
+    return block.split('\n').map((line) => '$indent$line').join('\n');
+  }
+
+  static int _leadingWhitespaceCount(String line) {
+    var count = 0;
+    while (count < line.length) {
+      final char = line.codeUnitAt(count);
+      if (char != 0x20 && char != 0x09) {
+        break;
+      }
+      count++;
+    }
+    return count;
+  }
+
+  static bool _isUnsetCertificateValue(String value) {
+    final normalized = value.trim();
+    if (normalized.isEmpty || normalized == '""' || normalized == "''") {
+      return true;
+    }
+    if (normalized.startsWith('#')) {
+      return true;
+    }
+    return false;
+  }
+
+  static bool _isEmptyBlockScalarIndicator(String value) {
+    final normalized = value.trim();
+    return RegExp(r'^[|>][-+]?\s*(?:#.*)?$').hasMatch(normalized);
+  }
+
+  static String _removeUnsetCertificateFields(String text) {
+    final lines = text.split('\n');
+    final output = <String>[];
+    var index = 0;
+    while (index < lines.length) {
+      final line = lines[index];
+      final match = RegExp(
+        r'^([ \t]*)(certificate|private-key)\s*:\s*(.*)$',
+      ).firstMatch(line);
+      if (match == null) {
+        output.add(line);
+        index++;
+        continue;
+      }
+      final indent = match.group(1) ?? '';
+      final value = match.group(3) ?? '';
+      if (_isUnsetCertificateValue(value)) {
+        index++;
+        continue;
+      }
+      if (_isEmptyBlockScalarIndicator(value)) {
+        final baseIndent = indent.length;
+        final blockLines = <String>[];
+        var cursor = index + 1;
+        while (cursor < lines.length) {
+          final nextLine = lines[cursor];
+          if (nextLine.trim().isEmpty) {
+            blockLines.add(nextLine);
+            cursor++;
+            continue;
+          }
+          final nextIndent = _leadingWhitespaceCount(nextLine);
+          if (nextIndent <= baseIndent) {
+            break;
+          }
+          blockLines.add(nextLine);
+          cursor++;
+        }
+        final hasRealContent = blockLines.any((blockLine) {
+          final trimmed = blockLine.trim();
+          return trimmed.isNotEmpty && !trimmed.startsWith('#');
+        });
+        if (!hasRealContent) {
+          index = cursor;
+          continue;
+        }
+      }
+      output.add(line);
+      index++;
+    }
+    return output.join('\n');
+  }
+
+  static String _collapseSingletonScalarBlocks(String text, Set<String> keys) {
+    final lines = text.split('\n');
+    final output = <String>[];
+    var index = 0;
+    while (index < lines.length) {
+      final line = lines[index];
+      final match = RegExp(r'^([ \t]*)([^:#]+)\s*:\s*$').firstMatch(line);
+      if (match == null) {
+        output.add(line);
+        index++;
+        continue;
+      }
+      final indent = match.group(1) ?? '';
+      final key = (match.group(2) ?? '').trim();
+      if (!keys.contains(key)) {
+        output.add(line);
+        index++;
+        continue;
+      }
+      final baseIndent = indent.length;
+      final blockLines = <String>[];
+      var cursor = index + 1;
+      while (cursor < lines.length) {
+        final nextLine = lines[cursor];
+        if (nextLine.trim().isEmpty) {
+          blockLines.add(nextLine);
+          cursor++;
+          continue;
+        }
+        final nextIndent = _leadingWhitespaceCount(nextLine);
+        if (nextIndent <= baseIndent) {
+          break;
+        }
+        blockLines.add(nextLine);
+        cursor++;
+      }
+      final contentLines = blockLines.where((blockLine) {
+        final trimmed = blockLine.trim();
+        return trimmed.isNotEmpty && !trimmed.startsWith('#');
+      }).toList();
+      if (contentLines.length != 1) {
+        output.add(line);
+        index++;
+        continue;
+      }
+      final contentLine = contentLines.first;
+      final trimmedContent = contentLine.trim();
+      final scalarValue = trimmedContent.split(RegExp(r'\s+#')).first.trim();
+      if (scalarValue.startsWith('- ') || scalarValue.contains(': ')) {
+        output.add(line);
+        index++;
+        continue;
+      }
+      output.add('$indent$key: $trimmedContent');
+      index = cursor;
+    }
+    return output.join('\n');
+  }
+
+  static String _ensureListenerCertificatePlaceholders(
+    String text,
+    Set<String> listenerNames,
+  ) {
+    final lines = text.split('\n');
+    final output = <String>[];
+    var index = 0;
+    var inListenersSection = false;
+
+    bool isTopLevelSection(String line) {
+      if (line.trim().isEmpty || line.trimLeft().startsWith('#')) {
+        return false;
+      }
+      return RegExp(r'^[^ \t][^:]*:\s*(?:#.*)?$').hasMatch(line);
+    }
+
+    while (index < lines.length) {
+      final line = lines[index];
+      if (!inListenersSection) {
+        output.add(line);
+        if (line.trim() == 'listeners:') {
+          inListenersSection = true;
+        }
+        index++;
+        continue;
+      }
+
+      if (isTopLevelSection(line) && line.trim() != 'listeners:') {
+        inListenersSection = false;
+        output.add(line);
+        index++;
+        continue;
+      }
+
+      final itemMatch = RegExp(
+        r'^([ \t]*)-\s+name:\s*(.+?)\s*(?:#.*)?$',
+      ).firstMatch(line);
+      if (itemMatch == null) {
+        output.add(line);
+        index++;
+        continue;
+      }
+
+      final itemIndent = itemMatch.group(1) ?? '';
+      final nameToken = (itemMatch.group(2) ?? '').trim();
+      final listenerName = nameToken.replaceAll(RegExp(r'''^["']|["']$'''), '');
+      final block = <String>[line];
+      var cursor = index + 1;
+      while (cursor < lines.length) {
+        final nextLine = lines[cursor];
+        if (RegExp(
+              '^${RegExp.escape(itemIndent)}-\\s+name:',
+            ).hasMatch(nextLine) ||
+            isTopLevelSection(nextLine)) {
+          break;
+        }
+        block.add(nextLine);
+        cursor++;
+      }
+
+      if (!listenerNames.contains(listenerName)) {
+        output.addAll(block);
+        index = cursor;
+        continue;
+      }
+
+      var hasCertificate = false;
+      var hasPrivateKey = false;
+      for (final blockLine in block) {
+        if (RegExp(r'^[ \t]+certificate\s*:').hasMatch(blockLine)) {
+          hasCertificate = true;
+        } else if (RegExp(r'^[ \t]+private-key\s*:').hasMatch(blockLine)) {
+          hasPrivateKey = true;
+        }
+      }
+
+      if (hasCertificate && hasPrivateKey) {
+        output.addAll(block);
+        index = cursor;
+        continue;
+      }
+
+      var insertAt = -1;
+      for (var i = 0; i < block.length; i++) {
+        if (RegExp(r'^[ \t]+listen\s*:').hasMatch(block[i])) {
+          insertAt = i + 1;
+          break;
+        }
+      }
+      if (insertAt == -1) {
+        for (var i = 0; i < block.length; i++) {
+          if (RegExp(r'^[ \t]+port\s*:').hasMatch(block[i])) {
+            insertAt = i + 1;
+            break;
+          }
+        }
+      }
+      if (insertAt == -1) {
+        insertAt = block.length;
+      }
+
+      final childIndent = '$itemIndent  ';
+      final additions = <String>[
+        if (!hasCertificate) '${childIndent}certificate: ./server.crt',
+        if (!hasPrivateKey) '${childIndent}private-key: ./server.key',
+      ];
+      output.addAll(block.take(insertAt));
+      output.addAll(additions);
+      output.addAll(block.skip(insertAt));
+      index = cursor;
+    }
+
+    return output.join('\n');
+  }
+
+  @visibleForTesting
+  static Uint8List normalizeImportedConfigBytes(Uint8List bytes) {
+    try {
+      final rawText = String.fromCharCodes(bytes);
+      var normalized = rawText;
+      final hasPlaceholder = RegExp(
+        r'(^|\n)\s*external-ui\s*:\s*/path/to/ui/folder/\s*(\n|$)',
+        multiLine: true,
+      );
+      if (hasPlaceholder.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasPlaceholder,
+          (match) =>
+              '${match.group(1) ?? ''}external-ui: ""${match.group(2) ?? ''}',
+        );
+      }
+      normalized = normalized.replaceAll(
+        'path: /test.yaml',
+        'path: ./test.yaml',
+      );
+      normalized = normalized.replaceAll(
+        'path: /path/to/save/file.yaml',
+        'path: ./path/to/save/file.yaml',
+      );
+      normalized = normalized.replaceAll(
+        'path: /path/to/save/file.mrs',
+        'path: ./path/to/save/file.mrs',
+      );
+      normalized = normalized.replaceAll('IP-ASN,1,PROXY', 'IP-ASN,1,DIRECT');
+      normalized = normalized.replaceAll('\n    - rule-set:fakeip-filter', '');
+      normalized = normalized.replaceAll('\n    - geosite:fakeip-filter', '');
+      normalized = normalized.replaceAll('''tunnels: # one line config
+  - tcp/udp,127.0.0.1:6553,114.114.114.114:53,proxy
+  - tcp,127.0.0.1:6666,rds.mysql.com:3306,vpn
+  # full yaml config
+  - network: [tcp, udp]
+    address: 127.0.0.1:7777
+    target: target.com
+    proxy: proxy
+
+''', '');
+      normalized = normalized.replaceAll('\n    dialer-proxy: proxy', '');
+      final hasAbsoluteExternalUi = RegExp(
+        r'(^|\n)(\s*external-ui\s*:\s*)(/(?!/)[^\n#]*)(\s*(?:#.*)?)(?=\n|$)',
+        multiLine: true,
+      );
+      if (hasAbsoluteExternalUi.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasAbsoluteExternalUi,
+          (match) =>
+              '${match.group(1) ?? ''}${match.group(2) ?? ''}""${match.group(4) ?? ''}',
+        );
+      }
+      normalized = normalized.replaceAll('- vmess1', '- vmess');
+      final hasDeprecatedRelayGroup = RegExp(
+        r'(^|\n)\s*-\s*name\s*:\s*"relay"\s*\n'
+        r'\s*type\s*:\s*relay\s*\n'
+        r'(?:\s+.*\n)*?(?=(?:\s*-\s*name\s*:)|(?:\S)|\Z)',
+        multiLine: true,
+      );
+      final hadRelayGroup = hasDeprecatedRelayGroup.hasMatch(normalized);
+      if (hadRelayGroup) {
+        try {
+          commonPrint.log('[profile-normalize] relay group match detected');
+        } catch (_) {}
+      }
+      if (hasDeprecatedRelayGroup.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(hasDeprecatedRelayGroup, (
+          match,
+        ) {
+          final prefix = match.group(1) ?? '';
+          return prefix == '\n' ? '\n' : '';
+        });
+      }
+      if (hadRelayGroup) {
+        try {
+          final relayStillPresent = RegExp(
+            r'(^|\n)\s*-\s*name\s*:\s*"relay"\s*\n\s*type\s*:\s*relay\b',
+            multiLine: true,
+          ).hasMatch(normalized);
+          commonPrint.log(
+            '[profile-normalize] relay group removed=${!relayStillPresent}',
+          );
+        } catch (_) {}
+      }
+      final hasSingletonProxyList = RegExp(
+        r'(^|\n)(\s*(?:server|password)\s*:\s*)\[\s*([^\]\n#]+?)\s*\](\s*(?:#.*)?)',
+        multiLine: true,
+      );
+      if (hasSingletonProxyList.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasSingletonProxyList,
+          (match) =>
+              '${match.group(1) ?? ''}${match.group(2) ?? ''}${match.group(3) ?? ''}${match.group(4) ?? ''}',
+        );
+      }
+      final hasSingletonProxyBlockList = RegExp(
+        r'(^|\n)(\s*)(server|password)\s*:\s*\n\2\s*-\s*([^\n]+?)\s*(?=\n|$)',
+        multiLine: true,
+      );
+      if (hasSingletonProxyBlockList.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasSingletonProxyBlockList,
+          (match) =>
+              '${match.group(1) ?? ''}${match.group(2) ?? ''}${match.group(3) ?? ''}: ${match.group(4) ?? ''}',
+        );
+      }
+      normalized = _collapseSingletonScalarBlocks(normalized, {
+        'server',
+        'password',
+        'host',
+        'client-fingerprint',
+      });
+      const vlessEncryptionPlaceholder =
+          'mlkem768x25519plus.native/xorpub/random.1rtt/0rtt.(padding len).(padding gap).(X25519 Password).(ML-KEM-768 Client)...';
+      const openVpnCertPlaceholder = 'MIIB...example';
+      const openVpnKeyPlaceholder = 'MIIE...example';
+      const openVpnTlsCryptPlaceholder = '...';
+      const openVpnCertSample = '''
+MIIBszCCAVmgAwIBAgIUQbG/Z7JQGg+Jb42bBYK6q8I4g5swCgYIKoZIzj0EAwIw
+EjEQMA4GA1UEAwwHbWlob21vMB4XDTI2MDUwMTAwMDAwMFoXDTM2MDQyOTAwMDAw
+MFowEjEQMA4GA1UEAwwHbWlob21vMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE
+hT8O8v9COiL0e7Gmab6r8jYxgB5xIvEtL10eF6QpJm+5ROK8f8yO8JHj2L2F6i1v
+g7CNgMCoX9YnZ9wqOqNTMFEwHQYDVR0OBBYEFDuK1nBI7w+Kz8o9hD7UzpJkq1N2
+MB8GA1UdIwQYMBaAFDuK1nBI7w+Kz8o9hD7UzpJkq1N2MA8GA1UdEwEB/wQFMAMB
+Af8wCgYIKoZIzj0EAwIDSAAwRQIhAJ4mquCRw+W1M7RCNzUVpV9qPzR9qYpK4SAi
+6pEh8FeaAiBKv+YbWBjjiWk0Yxch3v7y8W7S7e3pVtHh8x9n9+6w1Q==''';
+      const openVpnKeySample = '''
+MHcCAQEEIG1paG9tb19vcGVudnBuX3Rlc3Rfa2V5XzEyMzQ1Njc4oAoGCCqGSM49
+AwEHoUQDQgAEhT8O8v9COiL0e7Gmab6r8jYxgB5xIvEtL10eF6QpJm+5ROK8f8yO
+8JHj2L2F6i1vg7CNgMCoX9YnZ9wqOg==''';
+      const openVpnTlsCryptBytes = '''
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000
+00000000000000000000000000000000''';
+      String openVpnTlsCryptBody(String indent) =>
+          _expandIndentedBlock(indent, openVpnTlsCryptBytes);
+      String openVpnTlsCryptSample(String indent) =>
+          _expandIndentedBlock(indent, '''
+-----BEGIN OpenVPN Static key V1-----
+$openVpnTlsCryptBytes
+-----END OpenVPN Static key V1-----''');
+      if (normalized.contains(vlessEncryptionPlaceholder)) {
+        normalized = normalized.replaceAll(vlessEncryptionPlaceholder, 'none');
+      }
+      final hasOpenVpnCertPlaceholder = RegExp(
+        '^([ \\t]*)${RegExp.escape(openVpnCertPlaceholder)}\$',
+        multiLine: true,
+      );
+      if (hasOpenVpnCertPlaceholder.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasOpenVpnCertPlaceholder,
+          (match) =>
+              _expandIndentedBlock(match.group(1) ?? '', openVpnCertSample),
+        );
+      }
+      final hasOpenVpnKeyPlaceholder = RegExp(
+        '^([ \\t]*)${RegExp.escape(openVpnKeyPlaceholder)}\$',
+        multiLine: true,
+      );
+      if (hasOpenVpnKeyPlaceholder.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasOpenVpnKeyPlaceholder,
+          (match) =>
+              _expandIndentedBlock(match.group(1) ?? '', openVpnKeySample),
+        );
+      }
+      final hasOpenVpnTlsCryptBodyPlaceholder = RegExp(
+        '(^|\\n)([ \\t]*)-----BEGIN OpenVPN Static key V1-----\\n'
+        r'(([ \t]*[0-9a-fA-F]+\n)*)'
+        r'([ \t]*)\.\.\.\s*(?=\n)'
+        '\\n([ \\t]*)-----END OpenVPN Static key V1-----',
+        multiLine: true,
+      );
+      if (hasOpenVpnTlsCryptBodyPlaceholder.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasOpenVpnTlsCryptBodyPlaceholder,
+          (match) =>
+              '${match.group(1) ?? ''}'
+              '${match.group(2) ?? ''}-----BEGIN OpenVPN Static key V1-----\n'
+              '${openVpnTlsCryptBody(match.group(5) ?? '')}\n'
+              '${match.group(6) ?? ''}-----END OpenVPN Static key V1-----',
+        );
+      }
+      final hasOpenVpnTlsCryptPlaceholder = RegExp(
+        '^([ \\t]*)${RegExp.escape(openVpnTlsCryptPlaceholder)}\$',
+        multiLine: true,
+      );
+      if (hasOpenVpnTlsCryptPlaceholder.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasOpenVpnTlsCryptPlaceholder,
+          (match) => openVpnTlsCryptSample(match.group(1) ?? ''),
+        );
+      }
+      final hasInlineCaTags = RegExp(
+        r'(^|\n)\s*</?ca>\s*(?=\n|$)',
+        multiLine: true,
+      );
+      if (hasInlineCaTags.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(hasInlineCaTags, (match) {
+          final prefix = match.group(1);
+          return prefix == '\n' ? '\n' : '';
+        });
+      }
+      final hasRealityPublicKeyPlaceholder = RegExp(
+        r'(^|\n)(\s*public-key\s*:\s*)xxx(\s*(?=\n|$))',
+        multiLine: true,
+      );
+      if (hasRealityPublicKeyPlaceholder.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasRealityPublicKeyPlaceholder,
+          (match) =>
+              '${match.group(1) ?? ''}${match.group(2) ?? ''}CrrQSjAG_YkHLwvM2M-7XkKJilgL5upBKCp0od0tLhE${match.group(3) ?? ''}',
+        );
+      }
+      final hasUnsetCertificateFields = RegExp(
+        r'''(^|\n)(\s*(?:certificate|private-key)\s*:\s*)(?:""|''|\s*)(\s*(?:#.*)?)(?=\n|$)''',
+        multiLine: true,
+      );
+      if (hasUnsetCertificateFields.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasUnsetCertificateFields,
+          (match) => match.group(1) == '\n' ? '\n' : '',
+        );
+      }
+      final hasUnsetCertificatePlaceholderBlock = RegExp(
+        r'(^|\n)([ \t]*)(certificate|private-key)\s*:\s*(?:#.*)?\n'
+        r'((?:\2[ \t]+(?:#.*)?\n)*)'
+        r'(?=(?:\2[^ \t\n#])|(?:[^ \t\n])|\Z)',
+        multiLine: true,
+      );
+      if (hasUnsetCertificatePlaceholderBlock.hasMatch(normalized)) {
+        normalized = normalized.replaceAllMapped(
+          hasUnsetCertificatePlaceholderBlock,
+          (match) => match.group(1) == '\n' ? '\n' : '',
+        );
+      }
+      normalized = _removeUnsetCertificateFields(normalized);
+      normalized = _ensureListenerCertificatePlaceholders(normalized, {
+        'tuic-in-1',
+        'hysteria2-in-1',
+      });
+      normalized = normalized.replaceAll(
+        'short-id: xxx # optional',
+        'short-id: 10f897e26c4b9478 # optional',
+      );
+      normalized = normalized.replaceAll(
+        'short-id: xxx',
+        'short-id: 10f897e26c4b9478',
+      );
+      if (normalized == rawText) {
+        return bytes;
+      }
+      return Uint8List.fromList(normalized.codeUnits);
+    } catch (_) {
+      return bytes;
+    }
+  }
+
   ProfileType get type =>
       url.isEmpty == true ? ProfileType.file : ProfileType.url;
 
@@ -198,29 +736,174 @@ extension ProfileExtension on Profile {
   }
 
   Future<Profile> update() async {
-    final response = await request.getFileResponseForUrl(url);
+    commonPrint.log('[profile-sync-model] fetch start id=$id url=$url');
+    commonPrint.log('[profile-sync-model] request start id=$id direct=true');
+    final response = await request.getFileResponseForUrl(
+      url,
+      direct: true,
+      subscriptionCompatible: true,
+    );
+    commonPrint.log(
+      '[profile-sync-model] request returned id=$id status=${response.statusCode} bytes=${response.data?.length ?? 0}',
+    );
     final disposition = response.headers.value('content-disposition');
+    final profileTitle = response.headers.value('profile-title');
     final userinfo = response.headers.value('subscription-userinfo');
-    return copyWith(
-      label: label.takeFirstValid([
-        utils.getFileNameForDisposition(disposition),
-        id.toString(),
-      ]),
+    final uri = Uri.tryParse(url);
+    final fallbackLabel = label.takeFirstValid([
+      profileTitle,
+      utils.getFileNameForDisposition(disposition),
+      uri?.host,
+      id.toString(),
+    ]);
+    final next = copyWith(
+      label: fallbackLabel,
       subscriptionInfo: SubscriptionInfo.formHString(userinfo),
-    ).saveFile(response.data ?? Uint8List.fromList([]));
+    );
+    commonPrint.log(
+      '[profile-sync-model] fetch done id=$id bytes=${response.data?.length ?? 0} disposition=$disposition profileTitle=$profileTitle userinfo=${userinfo != null} label=$fallbackLabel',
+    );
+    return next.saveFile(response.data ?? Uint8List.fromList([]));
   }
 
   Future<Profile> saveFile(Uint8List bytes) async {
-    final path = await appPath.tempFilePath;
+    final rawBytes = bytes;
+    bytes = normalizeImportedConfigBytes(bytes);
+    try {
+      final rawText = String.fromCharCodes(rawBytes);
+      final normalizedText = String.fromCharCodes(bytes);
+      final lines = normalizedText.split('\n');
+      final preview = lines.take(12).join(r'\n');
+      commonPrint.log('[profile-save] preview id=$id text=$preview');
+      final rawEmptyFields = _extractEmptyCertificateFieldSnippetsForLog(
+        rawText,
+      );
+      if (rawEmptyFields.isNotEmpty) {
+        commonPrint.log(
+          '[profile-save] raw empty certificate fields id=$id text=${rawEmptyFields.join(r"\n---\n")}',
+        );
+      }
+      final normalizedEmptyFields = _extractEmptyCertificateFieldSnippetsForLog(
+        normalizedText,
+      );
+      if (normalizedEmptyFields.isNotEmpty) {
+        commonPrint.log(
+          '[profile-save] normalized empty certificate fields id=$id text=${normalizedEmptyFields.join(r"\n---\n")}',
+        );
+      }
+      final markers = <String>[];
+      for (var i = 0; i < lines.length; i++) {
+        final line = lines[i];
+        if (line.contains('reality-opts') ||
+            line.contains('public-key') ||
+            line.contains('short-id') ||
+            line.contains('<ca>') ||
+            line.contains('ca:') ||
+            line.contains('support-x25519mlkem768') ||
+            line.contains('client-fingerprint')) {
+          markers.add('${i + 1}:$line');
+        }
+      }
+      if (markers.isNotEmpty) {
+        commonPrint.log(
+          '[profile-save] markers id=$id text=${markers.join(r'\n')}',
+        );
+      }
+      final suspiciousFields = _extractSuspiciousScalarBlockSnippetsForLog(
+        normalizedText,
+        {
+          'client-fingerprint',
+          'host',
+          'server',
+          'password',
+          'certificate',
+          'private-key',
+        },
+      );
+      if (suspiciousFields.isNotEmpty) {
+        commonPrint.log(
+          '[profile-save] suspicious scalar blocks id=$id text=${suspiciousFields.join(r"\n---\n")}',
+        );
+      }
+    } catch (_) {}
+    final path = await appPath.coreSafeTempFilePath;
     final tempFile = File(path);
+    commonPrint.log(
+      '[profile-save] start id=$id temp=$path bytes=${bytes.length}',
+    );
     await tempFile.safeWriteAsBytes(bytes);
-    final message = await coreController.validateConfig(path);
+    var message = await coreController.validateConfig(path);
+    commonPrint.log('[profile-save] validate result id=$id message=$message');
     if (message.isNotEmpty) {
+      final converted = await coreController.convertSubscription(
+        String.fromCharCodes(bytes),
+      );
+      commonPrint.log(
+        '[profile-save] convert result id=$id length=${converted.length}',
+      );
+      if (converted.isNotEmpty) {
+        await tempFile.safeWriteAsString(converted);
+        message = await coreController.validateConfig(path);
+        commonPrint.log(
+          '[profile-save] revalidate result id=$id message=$message',
+        );
+      }
+    }
+    if (message.isNotEmpty) {
+      try {
+        final proxyIndexMatch = RegExp(r'proxy\s+(\d+):').firstMatch(message);
+        final proxyIndex = int.tryParse(proxyIndexMatch?.group(1) ?? '');
+        if (proxyIndex != null) {
+          final normalizedText = String.fromCharCodes(bytes);
+          final proxyCount = _countProxyEntriesForLog(normalizedText);
+          commonPrint.log(
+            '[profile-save] fail proxy count id=$id count=$proxyCount requestedIndex=$proxyIndex',
+          );
+          final proxyBlock = _extractProxyBlockForLog(
+            normalizedText,
+            proxyIndex,
+          );
+          if (proxyBlock.isNotEmpty) {
+            commonPrint.log(
+              '[profile-save] fail proxy block id=$id index=$proxyIndex text=$proxyBlock',
+            );
+            final neighborBlocks = _extractProxyNeighborBlocksForLog(
+              normalizedText,
+              proxyIndex,
+            );
+            if (neighborBlocks.isNotEmpty) {
+              commonPrint.log(
+                '[profile-save] fail proxy neighbors id=$id index=$proxyIndex text=$neighborBlocks',
+              );
+            }
+          } else {
+            final proxySection = _extractProxySectionForLog(normalizedText);
+            commonPrint.log(
+              '[profile-save] fail proxy block missing id=$id index=$proxyIndex section=$proxySection',
+            );
+          }
+        }
+      } catch (error) {
+        commonPrint.log('[profile-save] fail proxy block error=$error');
+      }
+      try {
+        final debugDumpPath = join(
+          await appPath.homeDirPath,
+          'debug-last-profile-save-fail.yaml',
+        );
+        await File(debugDumpPath).safeWriteAsBytes(bytes);
+        commonPrint.log('[profile-save] fail dump path=$debugDumpPath');
+      } catch (error) {
+        commonPrint.log('[profile-save] fail dump error=$error');
+      }
+      commonPrint.log('[profile-save] fail id=$id message=$message');
       throw message;
     }
     final mFile = await file;
+    commonPrint.log('[profile-save] copy begin id=$id target=${mFile.path}');
     await tempFile.copy(mFile.path);
     await tempFile.safeDelete();
+    commonPrint.log('[profile-save] success id=$id target=${mFile.path}');
     return copyWith(lastUpdateDate: DateTime.now());
   }
 
@@ -233,4 +916,167 @@ extension ProfileExtension on Profile {
     await File(path).copy(mFile.path);
     return copyWith(lastUpdateDate: DateTime.now());
   }
+}
+
+List<String> _extractEmptyCertificateFieldSnippetsForLog(String text) {
+  final normalized = _normalizeTextForLogExtraction(text);
+  final matches = ProfileExtension._emptyCertificateFieldLinePattern
+      .allMatches(normalized)
+      .toList();
+  if (matches.isEmpty) {
+    return const [];
+  }
+  final lines = normalized.split('\n');
+  final snippets = <String>[];
+  for (final match in matches.take(8)) {
+    final matchedLine = (match.group(0) ?? '').replaceFirst('\n', '');
+    final lineIndex = lines.indexWhere((line) => line == matchedLine);
+    if (lineIndex == -1) {
+      snippets.add(_escapeLogText(matchedLine));
+      continue;
+    }
+    final start = lineIndex > 0 ? lineIndex - 1 : lineIndex;
+    final end = lineIndex + 1 < lines.length ? lineIndex + 1 : lineIndex;
+    snippets.add(_escapeLogText(lines.sublist(start, end + 1).join('\n')));
+  }
+  return snippets;
+}
+
+List<String> _extractSuspiciousScalarBlockSnippetsForLog(
+  String text,
+  Set<String> keys,
+) {
+  final normalized = _normalizeTextForLogExtraction(text);
+  final lines = normalized.split('\n');
+  final snippets = <String>[];
+  final pattern = RegExp(r'^([ \t]*)([^:#]+)\s*:\s*$');
+  for (var i = 0; i < lines.length; i++) {
+    final match = pattern.firstMatch(lines[i]);
+    if (match == null) {
+      continue;
+    }
+    final key = (match.group(2) ?? '').trim();
+    if (!keys.contains(key)) {
+      continue;
+    }
+    final start = i > 0 ? i - 1 : i;
+    final end = i + 2 < lines.length ? i + 2 : lines.length - 1;
+    snippets.add(_escapeLogText(lines.sublist(start, end + 1).join('\n')));
+  }
+  return snippets.take(20).toList();
+}
+
+String _normalizeTextForLogExtraction(String text) {
+  return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+}
+
+int _leadingWhitespaceCountForLog(String line) {
+  var count = 0;
+  while (count < line.length) {
+    final char = line.codeUnitAt(count);
+    if (char != 0x20 && char != 0x09) {
+      break;
+    }
+    count++;
+  }
+  return count;
+}
+
+int? _findProxySectionEndLine(List<String> lines, int startLineIndex) {
+  for (var i = startLineIndex + 1; i < lines.length; i++) {
+    final line = lines[i];
+    if (line.trim().isEmpty) {
+      continue;
+    }
+    if (_leadingWhitespaceCountForLog(line) == 0) {
+      return i;
+    }
+  }
+  return null;
+}
+
+List<String> _extractProxyEntriesForLog(String text) {
+  final normalized = _normalizeTextForLogExtraction(text);
+  final lines = normalized.split('\n');
+  final proxyHeaderLineIndex = lines.indexWhere(
+    (line) => RegExp(r'^[ \t]*proxies\s*:\s*(?:#.*)?$').hasMatch(line),
+  );
+  if (proxyHeaderLineIndex == -1) {
+    return const [];
+  }
+  final sectionEndLineIndex = _findProxySectionEndLine(
+    lines,
+    proxyHeaderLineIndex,
+  );
+  final sectionLines = lines.sublist(
+    proxyHeaderLineIndex + 1,
+    sectionEndLineIndex ?? lines.length,
+  );
+  final entries = <String>[];
+  final buffer = <String>[];
+  for (final line in sectionLines) {
+    if (RegExp(r'^[ \t]{2,}- ').hasMatch(line)) {
+      if (buffer.isNotEmpty) {
+        entries.add(buffer.join('\n').trimRight());
+        buffer.clear();
+      }
+    }
+    if (buffer.isNotEmpty || line.trim().isNotEmpty) {
+      buffer.add(line);
+    }
+  }
+  if (buffer.isNotEmpty) {
+    entries.add(buffer.join('\n').trimRight());
+  }
+  return entries;
+}
+
+String _escapeLogText(String text) {
+  return text.trim().replaceAll('\n', r'\n');
+}
+
+String _extractProxyBlockForLog(String text, int proxyIndex) {
+  final entries = _extractProxyEntriesForLog(text);
+  if (proxyIndex <= 0 || proxyIndex > entries.length) {
+    return '';
+  }
+  return _escapeLogText(entries[proxyIndex - 1]);
+}
+
+String _extractProxyNeighborBlocksForLog(String text, int proxyIndex) {
+  final entries = _extractProxyEntriesForLog(text);
+  if (entries.isEmpty || proxyIndex <= 0 || proxyIndex > entries.length) {
+    return '';
+  }
+  final start = proxyIndex > 1 ? proxyIndex - 1 : proxyIndex;
+  final end = proxyIndex < entries.length ? proxyIndex + 1 : proxyIndex;
+  final output = <String>[];
+  for (var i = start; i <= end; i++) {
+    output.add('[$i] ${_escapeLogText(entries[i - 1])}');
+  }
+  return output.join(r'\n---\n');
+}
+
+int _countProxyEntriesForLog(String text) {
+  return _extractProxyEntriesForLog(text).length;
+}
+
+String _extractProxySectionForLog(String text) {
+  final normalized = _normalizeTextForLogExtraction(text);
+  final lines = normalized.split('\n');
+  final proxyHeaderLineIndex = lines.indexWhere(
+    (line) => RegExp(r'^[ \t]*proxies\s*:\s*(?:#.*)?$').hasMatch(line),
+  );
+  if (proxyHeaderLineIndex == -1) {
+    return '';
+  }
+  final sectionEndLineIndex = _findProxySectionEndLine(
+    lines,
+    proxyHeaderLineIndex,
+  );
+  final sectionLines = lines.sublist(
+    proxyHeaderLineIndex,
+    sectionEndLineIndex ?? lines.length,
+  );
+  return sectionLines.take(120).join(r'\n');
 }

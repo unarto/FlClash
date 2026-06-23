@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:fl_clash/common/common.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:flutter/material.dart';
@@ -17,6 +19,37 @@ T roundTrip<T>(
 }
 
 void main() {
+  group('PackageInfoExtension', () {
+    test('default ua uses clashmeta-compatible token', () {
+      final info = PackageInfo(
+        appName: appName,
+        packageName: packageName,
+        version: '0.8.93',
+        buildNumber: '1',
+      );
+      final ua = info.ua;
+      expect(ua, contains('FlClash/v0.8.93'));
+      expect(ua, contains('ClashMeta'));
+      expect(ua, contains('Platform/${Platform.operatingSystem}'));
+      expect(ua, isNot(contains('clash-verge')));
+    });
+
+    test('provider compatible ua stays on subscription-safe client token', () {
+      final info = PackageInfo(
+        appName: appName,
+        packageName: packageName,
+        version: '0.8.93',
+        buildNumber: '1',
+      );
+      final ua = info.providerCompatibleUa;
+      if (system.isOhos) {
+        expect(ua, 'clash.meta/1.10.0');
+      } else {
+        expect(ua, info.ua);
+      }
+    });
+  });
+
   group('AppSettingProps JSON round-trip', () {
     test('default values survive round-trip', () {
       const props = AppSettingProps();
@@ -66,6 +99,27 @@ void main() {
     test('safeFromJson returns default on invalid JSON', () {
       final result = AppSettingProps.safeFromJson({'invalid': 'data'});
       expect(result, isA<AppSettingProps>());
+    });
+  });
+
+  group('GeoXUrl defaults', () {
+    test('uses jsdelivr mirror defaults for geodata downloads', () {
+      expect(
+        defaultGeoXUrl.mmdb,
+        'https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb',
+      );
+      expect(
+        defaultGeoXUrl.asn,
+        'https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb',
+      );
+      expect(
+        defaultGeoXUrl.geoip,
+        'https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat',
+      );
+      expect(
+        defaultGeoXUrl.geosite,
+        'https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat',
+      );
     });
   });
 
@@ -275,6 +329,23 @@ void main() {
       expect(restored.vpnProps.enable, false);
       expect(restored.windowProps.width, 1280);
       expect(restored.windowProps.height, 720);
+    });
+  });
+
+  group('Script.saveWithPath', () {
+    test('copies source file into the script target path', () async {
+      await appPath.initOhosPaths();
+      final sourceDir = Directory(await appPath.tempPath);
+      await sourceDir.create(recursive: true);
+      final sourceFile = File('${sourceDir.path}/script-source.js');
+      await sourceFile.writeAsString('const value = 42;');
+
+      final script = Script.create(label: 'copy-test');
+      final saved = await script.saveWithPath(sourceFile.path);
+      final targetFile = File(await saved.path);
+
+      expect(await targetFile.exists(), isTrue);
+      expect(await targetFile.readAsString(), 'const value = 42;');
     });
   });
 }
