@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mode="${1:-}"
+mode="${1:-minor}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pubspec_file="${PUBSPEC_FILE:-"$script_dir/../pubspec.yaml"}"
 
 usage() {
   cat <<'EOF'
-Usage: tool/bump_version.sh <major|minor|all>
+Usage: tool/bump_version.sh [major|minor|all]
 
 major  Bump app version patch: 0.8.94 -> 0.8.95
-minor  Bump build number: YYYYMMDDNN, NN is today's build count from 01 to 99
+minor  Bump build number: YYYYMMDDNN, NN is today's build count from 01 to 99 (default)
 all    Bump both app version patch and build number
 EOF
 }
