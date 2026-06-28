@@ -77,16 +77,18 @@ Future<List<Group>> _toGroupsTask(ComputeGroupsState state) async {
       })
       .toList();
   if (groupsRaw.isNotEmpty) {
-    final groupSummaries = groupsRaw.map((group) {
-      final name = group['name'] ?? '';
-      final items = (group['all'] as List?) ?? const [];
-      final sample = items
-          .take(5)
-          .map((item) => (item as Map?)?['name']?.toString() ?? '')
-          .where((item) => item.isNotEmpty)
-          .join('|');
-      return '$name:${items.length}[$sample]';
-    }).join('; ');
+    final groupSummaries = groupsRaw
+        .map((group) {
+          final name = group['name'] ?? '';
+          final items = (group['all'] as List?) ?? const [];
+          final sample = items
+              .take(5)
+              .map((item) => (item as Map?)?['name']?.toString() ?? '')
+              .where((item) => item.isNotEmpty)
+              .join('|');
+          return '$name:${items.length}[$sample]';
+        })
+        .join('; ');
     commonPrint.log('[proxy-debug] toGroupsTask rawGroups $groupSummaries');
   } else {
     commonPrint.log(
@@ -239,6 +241,19 @@ Future<VM2<String, String>> _makeRealProfileTask(
       rawConfig['dns']['nameserver'] = [...nameserver, systemDns];
     }
   }
+  if (system.isOhos) {
+    rawConfig['profile'] = normalizeOhosProfileConfig(
+      rawConfig['profile'] as Map? ?? const {},
+    );
+    rawConfig['dns'] = normalizeOhosDnsConfig(
+      rawConfig['dns'] as Map? ?? const {},
+      realPatchConfig.dns,
+    );
+    rawConfig['tun']['dns-hijack'] = normalizeOhosTunDnsHijack(
+      List<String>.from(rawConfig['tun']['dns-hijack'] ?? const []),
+    );
+    rawConfig['log-level'] = 'info';
+  }
   List<String> rules = [];
   if (data.rules.isEmpty) {
     if (rawConfig['rules'] != null) {
@@ -284,6 +299,9 @@ Future<VM2<String, String>> _makeRealProfileTask(
   } else {
     rules = data.rules.map((item) => item.rawValue).toList();
   }
+  if (system.isOhos) {
+    rules = prependOhosDirectRules(rules);
+  }
   if (data.proxyGroups.isNotEmpty) {
     rawConfig['proxy-groups'] = data.proxyGroups;
   }
@@ -291,6 +309,202 @@ Future<VM2<String, String>> _makeRealProfileTask(
   final yaml = await _encodeYaml(Map<String, dynamic>.from(rawConfig));
   return VM2(yaml, yaml.toMd5());
 }
+
+Map<String, dynamic> normalizeOhosDnsConfig(Map dnsConfig, Dns patchDns) {
+  const ohosDirectSystemDns = 'system://';
+  final normalized = Map<String, dynamic>.from(dnsConfig);
+  normalized['listen'] = patchDns.listen.isEmpty
+      ? defaultDns.listen
+      : patchDns.listen;
+  if ((normalized['enable'] as bool?) != true) {
+    normalized['enable'] = true;
+  }
+  final nameserver = List<String>.from(normalized['nameserver'] ?? const []);
+  final fallback = List<String>.from(normalized['fallback'] ?? const []);
+  final patchFallback = patchDns.fallback;
+  if (fallback.isEmpty && patchFallback.isNotEmpty) {
+    normalized['fallback'] = patchFallback;
+  }
+  if (_shouldPreferOhosFallbackResolvers(nameserver, patchDns)) {
+    normalized['nameserver'] = List<String>.from(
+      fallback.isNotEmpty ? fallback : patchFallback,
+    );
+  } else if (nameserver.isEmpty) {
+    normalized['nameserver'] = patchDns.nameserver;
+  }
+  final ohosDirectResolvers = _resolveOhosBootstrapDnsResolvers(
+    normalized,
+    patchDns,
+  );
+  final directNameserver = List<String>.from(
+    normalized['direct-nameserver'] ?? const [],
+  );
+  if (directNameserver.isEmpty) {
+    normalized['direct-nameserver'] = [ohosDirectSystemDns];
+    normalized['direct-nameserver-follow-policy'] = false;
+  }
+  final nameserverPolicy = Map<String, dynamic>.from(
+    normalized['nameserver-policy'] ?? const <String, dynamic>{},
+  );
+  for (final domain in _ohosHuaweiSystemDnsDomains) {
+    nameserverPolicy.putIfAbsent(domain, () => ohosDirectResolvers);
+  }
+  normalized['nameserver-policy'] = nameserverPolicy;
+  final fakeIpFilter = List<String>.from(
+    normalized['fake-ip-filter'] ?? const <String>[],
+  );
+  for (final domain in _ohosHuaweiFakeIpFilterDomains) {
+    if (fakeIpFilter.contains(domain)) {
+      continue;
+    }
+    fakeIpFilter.add(domain);
+  }
+  normalized['fake-ip-filter'] = fakeIpFilter;
+  return normalized;
+}
+
+bool _shouldPreferOhosFallbackResolvers(
+  List<String> nameserver,
+  Dns patchDns,
+) {
+  if (nameserver.isEmpty) {
+    return false;
+  }
+  final patchFallback = patchDns.fallback;
+  if (patchFallback.isEmpty) {
+    return false;
+  }
+  final normalizedNameserver = nameserver
+      .map((item) => item.trim())
+      .where((item) => item != 'system://')
+      .toList();
+  final normalizedPatchNameserver = patchDns.nameserver
+      .map((item) => item.trim())
+      .toList();
+  if (normalizedNameserver.length != normalizedPatchNameserver.length) {
+    return false;
+  }
+  for (var i = 0; i < normalizedNameserver.length; i++) {
+    if (normalizedNameserver[i] != normalizedPatchNameserver[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+List<String> _resolveOhosBootstrapDnsResolvers(
+  Map<String, dynamic> dnsConfig,
+  Dns patchDns,
+) {
+  const systemDns = 'system://';
+  final resolvers = <String>[];
+
+  void addAll(dynamic source) {
+    for (final item in List<String>.from(source ?? const <String>[])) {
+      if (item.isEmpty || item == systemDns || resolvers.contains(item)) {
+        continue;
+      }
+      resolvers.add(item);
+    }
+  }
+
+  addAll(dnsConfig['default-nameserver']);
+  addAll(patchDns.defaultNameserver);
+  if (resolvers.isEmpty) {
+    addAll(dnsConfig['direct-nameserver']);
+  }
+  if (resolvers.isEmpty) {
+    addAll(dnsConfig['nameserver']);
+    addAll(patchDns.nameserver);
+  }
+  return resolvers.isEmpty ? [systemDns] : resolvers;
+}
+
+List<String> prependOhosDirectRules(List<String> rules) {
+  final remainingRules = List<String>.from(rules);
+  final prependedRules = <String>[];
+  for (final rule in _ohosHuaweiDirectRules) {
+    if (remainingRules.remove(rule)) {
+      prependedRules.add(rule);
+      continue;
+    }
+    prependedRules.add(rule);
+  }
+  return [...prependedRules, ...remainingRules];
+}
+
+List<String> normalizeOhosTunDnsHijack(List<String> dnsHijack) {
+  if (dnsHijack.isEmpty) {
+    return ['0.0.0.0:53'];
+  }
+  final normalized = <String>[];
+  for (final item in dnsHijack) {
+    final value = item == 'any:53' ? '0.0.0.0:53' : item;
+    if (normalized.contains(value)) {
+      continue;
+    }
+    normalized.add(value);
+  }
+  return normalized;
+}
+
+Map<String, dynamic> normalizeOhosProfileConfig(Map profile) {
+  final normalized = Map<String, dynamic>.from(profile);
+  normalized['store-selected'] = false;
+  normalized['store-fake-ip'] = false;
+  return normalized;
+}
+
+const _ohosHuaweiSystemDnsDomains = [
+  'browsercfg-drcn.cloud.dbankcloud.cn',
+  'browserr-drcn.dbankcdn.cn',
+  'configserver-drcn.platform.dbankcloud.cn',
+  'httpdns.platform.dbankcloud.com',
+  'httpdns-browser.platform.dbankcloud.cn',
+  'contentcenter-drcn.cloud.dbankcloud.cn',
+  'newsfeed-drcn.cloud.dbankcloud.cn',
+  'nps-drcn.platform.dbankcloud.cn',
+  'terms-drcn.platform.dbankcloud.cn',
+  'metrics1-drcn.dt.dbankcloud.cn',
+  'sdkserver-drcn.op.dbankcloud.cn',
+  'feeds-drcn.cloud.huawei.com.cn',
+  '+.grs.dbankcloud.cn',
+  '+.grs.dbankcloud.com',
+];
+
+const _ohosHuaweiFakeIpFilterDomains = [
+  'browsercfg-drcn.cloud.dbankcloud.cn',
+  'browserr-drcn.dbankcdn.cn',
+  'configserver-drcn.platform.dbankcloud.cn',
+  'httpdns.platform.dbankcloud.com',
+  'httpdns-browser.platform.dbankcloud.cn',
+  'contentcenter-drcn.cloud.dbankcloud.cn',
+  'newsfeed-drcn.cloud.dbankcloud.cn',
+  'nps-drcn.platform.dbankcloud.cn',
+  'terms-drcn.platform.dbankcloud.cn',
+  'metrics1-drcn.dt.dbankcloud.cn',
+  'sdkserver-drcn.op.dbankcloud.cn',
+  'feeds-drcn.cloud.huawei.com.cn',
+  '*.grs.dbankcloud.cn',
+  '*.grs.dbankcloud.com',
+];
+
+const _ohosHuaweiDirectRules = [
+  'IP-CIDR,139.9.98.98/32,DIRECT,no-resolve',
+  'IP-CIDR,139.9.99.99/32,DIRECT,no-resolve',
+  'DOMAIN,browsercfg-drcn.cloud.dbankcloud.cn,DIRECT',
+  'DOMAIN,browserr-drcn.dbankcdn.cn,DIRECT',
+  'DOMAIN,configserver-drcn.platform.dbankcloud.cn,DIRECT',
+  'DOMAIN,httpdns.platform.dbankcloud.com,DIRECT',
+  'DOMAIN,httpdns-browser.platform.dbankcloud.cn,DIRECT',
+  'DOMAIN,contentcenter-drcn.cloud.dbankcloud.cn,DIRECT',
+  'DOMAIN,newsfeed-drcn.cloud.dbankcloud.cn,DIRECT',
+  'DOMAIN,nps-drcn.platform.dbankcloud.cn,DIRECT',
+  'DOMAIN,terms-drcn.platform.dbankcloud.cn,DIRECT',
+  'DOMAIN,metrics1-drcn.dt.dbankcloud.cn,DIRECT',
+  'DOMAIN,sdkserver-drcn.op.dbankcloud.cn,DIRECT',
+  'DOMAIN,feeds-drcn.cloud.huawei.com.cn,DIRECT',
+];
 
 Future<List<String>> shakingProfileTask(
   VM3<Iterable<int>, Iterable<int>, VM3<String, String, String>> data,
@@ -315,7 +529,8 @@ Future<List<String>> _shakingProfileTask(
     Iterable<int>,
     VM3<String, String, String>,
     RootIsolateToken
-  > data,
+  >
+  data,
 ) async {
   final profileIds = data.a;
   final scriptIds = data.b;

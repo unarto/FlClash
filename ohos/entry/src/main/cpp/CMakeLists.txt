@@ -24,4 +24,8 @@ if(OHOS_CORE_ARCHIVE)
 endif()
 
 add_library(entry SHARED bridge.cpp)
-target_link_libraries(entry PUBLIC libace_napi.z.so libchild_process.so libhilog_ndk.z.so)
+target_link_libraries(entry PUBLIC
+    libace_napi.z.so
+    libchild_process.so
+    libhilog_ndk.z.so
+    libnet_connection.so)

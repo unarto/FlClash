@@ -23,10 +23,21 @@ interface NativeBridge {
   chmodPath(path: string): boolean;
   probeCreateNativeChildProcess(): number;
   startCoreChildProcess(entryParams: string): number;
-  startBundledCoreProcess(sourcePath: string, socketPath: string): number;
+  startBundledCoreProcess(
+    sourcePath: string,
+    socketPath: string,
+    logDirPath: string,
+  ): number;
+  startEmbeddedCore(socketPath: string, logDirPath: string): number;
   startTun(fd: number, stack: string, address: string, dns: string): boolean;
   stopTun(): boolean;
   lastError(): string;
+}
+
+interface PendingDebugVpnStart {
+  stack: string;
+  ipv6: boolean;
+  allowBypass: boolean;
 }
 
 const nativeBridge = loadNativeModule('libentry.so') as NativeBridge;
@@ -104,6 +115,7 @@ async function prepareWritePermission(uri: string): Promise<void> {
 
 export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
   private static pendingLink: string = '';
+  private static pendingDebugVpnStart: PendingDebugVpnStart | null = null;
   private static activeChannel: MethodChannel | null = null;
   private static lastImportedGalleryUri: string = '';
   private static lastImportedGalleryIdentifier: string = '';
@@ -188,9 +200,40 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
   static setPendingLinkFromWant(want: Want | undefined): void {
     const uri = (want?.uri as string | undefined) ?? '';
     if (!uri) {
+      const params = want?.parameters as Record<string, Object> | undefined;
+      const debugStartVpn = params?.debugStartVpn;
+      if (debugStartVpn === true) {
+        const stack = typeof params?.stack === 'string' && params.stack.length > 0
+          ? params.stack
+          : 'mixed';
+        const ipv6 = params?.ipv6 === true;
+        const allowBypass = params?.allowBypass !== false;
+        const pendingDebugVpnStart: PendingDebugVpnStart = {
+          stack,
+          ipv6,
+          allowBypass,
+        };
+        AppPlugin.pendingDebugVpnStart = pendingDebugVpnStart;
+        console.info(
+          `[AppPlugin] setPendingDebugVpnStart stack=${stack} ipv6=${ipv6} allowBypass=${allowBypass}`,
+        );
+      }
       return;
     }
     AppPlugin.setPendingLink(uri);
+  }
+
+  private consumePendingDebugVpnStart(): PendingDebugVpnStart | null {
+    const pending = AppPlugin.pendingDebugVpnStart;
+    AppPlugin.pendingDebugVpnStart = null;
+    return pending;
+  }
+
+  private tryStartPendingDebugVpn(): void {
+    if (AppPlugin.pendingDebugVpnStart == null) {
+      return;
+    }
+    console.info('[AppPlugin] pending debug VPN start is ready for Flutter consumption');
   }
 
   getUniqueClassName(): string {
@@ -212,6 +255,7 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
     );
     AppPlugin.activeChannel = this.channel;
     this.channel.setMethodCallHandler(this);
+    this.tryStartPendingDebugVpn();
   }
 
   onDetachedFromEngine(binding: FlutterPluginBinding): void {
@@ -319,10 +363,12 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         const args = call.args as Map<string, string> | null;
         const sourcePath = args?.get('sourcePath') ?? '';
         const socketPath = args?.get('socketPath') ?? '';
+        const logDirPath = args?.get('logDirPath') ?? '';
         try {
           const pid = nativeBridge.startBundledCoreProcess(
             sourcePath,
             socketPath,
+            logDirPath,
           );
           if (pid <= 0) {
             console.error(
@@ -333,6 +379,31 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         } catch (error) {
           result.error(
             'START_BUNDLED_CORE_PROCESS_FAILED',
+            `${error}`,
+            nativeBridge.lastError(),
+          );
+        }
+        return;
+      }
+      case 'startEmbeddedCore': {
+        const args = call.args as Map<string, string> | null;
+        const socketPath = args?.get('socketPath') ?? '';
+        const logDirPath = args?.get('logDirPath') ?? '';
+        try {
+          const pid = nativeBridge.startEmbeddedCore(socketPath, logDirPath);
+          if (pid <= 0) {
+            console.error(
+              `[AppPlugin] startEmbeddedCore failed, lastError=${nativeBridge.lastError()}`,
+            );
+          } else {
+            console.info(
+              `[AppPlugin] startEmbeddedCore pid=${pid} socketPath=${socketPath}`,
+            );
+          }
+          result.success(pid);
+        } catch (error) {
+          result.error(
+            'START_EMBEDDED_CORE_FAILED',
             `${error}`,
             nativeBridge.lastError(),
           );
@@ -399,7 +470,18 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         const ipv6 = (args?.get('ipv6') as boolean | undefined) ?? false;
         const allowBypass =
           (args?.get('allowBypass') as boolean | undefined) ?? true;
-        void this.startVpn(stack, ipv6, allowBypass, result);
+        const initParamsJson =
+          (args?.get('initParamsJson') as string | undefined) ?? '';
+        const setupParamsJson =
+          (args?.get('setupParamsJson') as string | undefined) ?? '';
+        void this.startVpn(
+          stack,
+          ipv6,
+          allowBypass,
+          initParamsJson,
+          setupParamsJson,
+          result,
+        );
         return;
       }
       case 'stopVpn': {
@@ -408,6 +490,19 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
       }
       case 'getVpnRunning': {
         result.success(this.isVpnRunning);
+        return;
+      }
+      case 'consumePendingDebugVpnStart': {
+        const pending = this.consumePendingDebugVpnStart();
+        if (pending == null) {
+          result.success(null);
+          return;
+        }
+        result.success({
+          stack: pending.stack,
+          ipv6: pending.ipv6,
+          allowBypass: pending.allowBypass,
+        });
         return;
       }
       case 'importImageToGallery': {
@@ -610,6 +705,8 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
     stack: string,
     ipv6: boolean,
     allowBypass: boolean,
+    initParamsJson: string,
+    setupParamsJson: string,
     result: MethodResult,
   ): Promise<void> {
     if (this.isVpnRunning) {
@@ -631,6 +728,8 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
           stack,
           ipv6,
           allowBypass,
+          initParamsJson,
+          setupParamsJson,
         },
       };
       console.info(

@@ -19,7 +19,9 @@ class CoreController {
   late CoreHandlerInterface _interface;
 
   CoreController._internal() {
-    if (system.isAndroid || system.isOhos) {
+    if (system.isOhos) {
+      _interface = coreService!;
+    } else if (system.isAndroid) {
       _interface = coreLib!;
     } else {
       _interface = coreService!;
@@ -83,14 +85,12 @@ class CoreController {
     await Directory(await appPath.tempPath).create(recursive: true);
     final bundledCorePath = await appPath.ohosBundledCorePath;
     final bundledCoreFile = File(bundledCorePath);
-    if (!await bundledCoreFile.exists()) {
-      final data = await rootBundle.load('assets/data/FlClashCore');
-      await bundledCoreFile.writeAsBytes(
-        data.buffer.asUint8List(),
-        flush: true,
-      );
-      commonPrint.log('[BOOT] initOhosCoreBinary extracted: $bundledCorePath');
-    }
+    final data = await rootBundle.load('assets/data/FlClashCore');
+    final bytes = data.buffer.asUint8List();
+    await bundledCoreFile.writeAsBytes(bytes, flush: true);
+    commonPrint.log(
+      '[BOOT] initOhosCoreBinary refreshed path=$bundledCorePath bytes=${bytes.length}',
+    );
     final markedExecutable =
         await app?.markExecutable(bundledCorePath) ?? false;
     commonPrint.log(

@@ -58,8 +58,14 @@ class CoreLib extends CoreHandlerInterface {
       final dataJson = await data.trim().commonToJSON<dynamic>();
       final result = ActionResult.fromJson(dataJson);
       if (result.id?.isEmpty ?? true) {
+        commonPrint.log(
+          '[OHOS-CORE] event result method=${result.method.name} dataType=${result.data.runtimeType}',
+        );
         if (result.method == ActionMethod.message) {
           final coreEvent = CoreEvent.fromJson(result.data);
+          commonPrint.log(
+            '[OHOS-CORE] event message type=${coreEvent.type.name}',
+          );
           if (coreEvent.type == CoreEventType.request) {
             commonPrint.log(
               '[OHOS-CORE] request event payload=${coreEvent.data}',
@@ -94,11 +100,12 @@ class CoreLib extends CoreHandlerInterface {
       if (payload == null || payload.isEmpty) {
         return;
       }
+      commonPrint.log(
+        '[OHOS-CORE] consume events raw length=${payload.length}',
+      );
       final events = await payload.commonToJSON<List<dynamic>>();
       if (events.isNotEmpty) {
-        commonPrint.log(
-          '[OHOS-CORE] consume events count=${events.length}',
-        );
+        commonPrint.log('[OHOS-CORE] consume events count=${events.length}');
       }
       for (final item in events) {
         await _handleOhosResult<void>(json.encode(item));

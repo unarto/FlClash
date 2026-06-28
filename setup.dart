@@ -1171,7 +1171,8 @@ void Function() _patchFlutterOhosEmbeddingHarForBuild(
     const currentUri: string = argsMap.get('uri') ?? '';
 """;
   const fixedSnippet = """
-    const currentUri: string = (call.argument('uri') as string) ?? '';
+    const uriArg = call.argument('uri');
+    const currentUri: string = typeof uriArg === 'string' ? uriArg : '';
 """;
   final source = navigationChannel.readAsStringSync();
   if (source.contains(fixedSnippet)) {
@@ -1456,7 +1457,19 @@ Future<int> _buildOhosCoreExecutable(
     stderr.write(utf8.decode(data));
   });
 
-  return process.exitCode;
+  final exitCode = await process.exitCode;
+  if (exitCode != 0) {
+    return exitCode;
+  }
+
+  final assetTarget = File(p.join(rootDir, 'assets', 'data', 'FlClashCore'));
+  assetTarget.parent.createSync(recursive: true);
+  outputFile.copySync(assetTarget.path);
+  stdout.writeln(
+    'Synced OHOS bundled executable core: ${outputFile.path} -> ${assetTarget.path}',
+  );
+
+  return exitCode;
 }
 
 String _detectArch() {

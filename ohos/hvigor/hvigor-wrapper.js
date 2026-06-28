@@ -22,11 +22,49 @@ function unescapePropertyValue(value) {
 }
 
 function readFlutterSdk(appHome) {
+  const envFlutterSdk = process.env.FLUTTER_ROOT || process.env.FLUTTER_SDK || '';
+  if (envFlutterSdk) {
+    return envFlutterSdk;
+  }
   const value = readLocalProperty(appHome, 'flutter.sdk');
   if (value) {
     return value;
   }
-  return process.env.FLUTTER_ROOT || process.env.FLUTTER_SDK || '';
+  return '';
+}
+
+function ensureDirSync(dirPath) {
+  if (!dirPath || dirPath === '.' || fs.existsSync(dirPath)) {
+    return;
+  }
+  ensureDirSync(path.dirname(dirPath));
+  try {
+    fs.mkdirSync(dirPath);
+  } catch (error) {
+    if (!fs.existsSync(dirPath)) {
+      throw error;
+    }
+  }
+}
+
+function copyFileIfChanged(sourcePath, targetPath) {
+  ensureDirSync(path.dirname(targetPath));
+  if (fs.existsSync(targetPath)) {
+    const sourceStat = fs.statSync(sourcePath);
+    const targetStat = fs.statSync(targetPath);
+    if (sourceStat.size === targetStat.size &&
+        sourceStat.mtimeMs <= targetStat.mtimeMs) {
+      return false;
+    }
+  }
+  fs.copyFileSync(sourcePath, targetPath);
+  return true;
+}
+
+function removeDirectoryContentsSync(dirPath) {
+  for (const entry of fs.readdirSync(dirPath)) {
+    removePathSync(path.join(dirPath, entry));
+  }
 }
 
 function readLocalProperty(appHome, propertyName) {
@@ -186,14 +224,33 @@ function removePathSync(target) {
   }
   const stat = fs.lstatSync(target);
   if (stat.isDirectory() && !stat.isSymbolicLink()) {
-    fs.rmSync(target, {recursive: true, force: true});
+    removeDirectoryContentsSync(target);
+    fs.rmdirSync(target);
     return;
   }
   fs.rmSync(target, {force: true});
 }
 
+function installLegacyFsCompat() {
+  require(path.join(__dirname, 'legacy-fs-compat.js'));
+}
+
+function configureLegacyFsCompatForChildNode() {
+  const compatModulePath = path.join(__dirname, 'legacy-fs-compat.js');
+  const requireFlag = `--require=${compatModulePath}`;
+  const existingNodeOptions = process.env.NODE_OPTIONS || '';
+
+  if (existingNodeOptions.split(/\s+/).includes(requireFlag)) {
+    return;
+  }
+
+  process.env.NODE_OPTIONS = existingNodeOptions
+      ? `${requireFlag} ${existingNodeOptions}`
+      : requireFlag;
+}
+
 function ensureSymlink(targetPath, linkPath) {
-  fs.mkdirSync(path.dirname(linkPath), {recursive: true});
+  ensureDirSync(path.dirname(linkPath));
   try {
     const currentTarget = fs.readlinkSync(linkPath);
     if (path.resolve(path.dirname(linkPath), currentTarget) === targetPath) {
@@ -233,7 +290,7 @@ function prepareBundledHvigorWorkspace() {
     },
   };
 
-  fs.mkdirSync(workspaceDir, {recursive: true});
+  ensureDirSync(workspaceDir);
   fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson));
 
   ensureSymlink(
@@ -357,13 +414,11 @@ function patchOhosPackageForNativeHar(appHome, flutterSdk) {
   };
 }
 
-const entryHarDependencies = {
-  window_ext: 'file:../har/window_ext.har',
-  wifi_ssid: 'file:../har/wifi_ssid.har',
-  setup: 'file:../har/setup.har',
-  rust_api: 'file:../har/rust_api.har',
-  proxy: 'file:../har/proxy.har',
-};
+// Keep the entry module dependencies aligned with the custom registrant below.
+// Pulling additional local OHOS plugins into entry causes ArkTS to compile their
+// source trees as local modules, which breaks debug builds and is unrelated to
+// the VPN validation path.
+const entryHarDependencies = {};
 
 function patchEntryHarDependencies(appHome) {
   const entryPackagePath = path.join(appHome, 'entry', 'oh-package.json5');
@@ -439,6 +494,236 @@ export class GeneratedPluginRegistrant {
   fs.writeFileSync(registrantPath, customRegistrant);
 }
 
+function patchFlutterOhosNavigationChannel(appHome) {
+  const ohpmRoots = [
+    path.join(appHome, 'oh_modules', '.ohpm'),
+    path.join(appHome, 'entry', 'oh_modules', '.ohpm'),
+  ];
+  const before = `    const argsMap = call.args as Map<string, string>;
+    const currentUri: string = argsMap.get('uri') ?? '';
+`;
+  const after = `    const uriArg = call.argument('uri');
+    const currentUri: string = typeof uriArg === 'string' ? uriArg : '';
+`;
+
+  for (const ohpmRoot of ohpmRoots) {
+    if (!fs.existsSync(ohpmRoot)) {
+      continue;
+    }
+    for (const packageName of fs.readdirSync(ohpmRoot)) {
+      if (!packageName.startsWith('@ohos+flutter_ohos@')) {
+        continue;
+      }
+      const channelPath = path.join(
+          ohpmRoot,
+          packageName,
+          'oh_modules',
+          '@ohos',
+          'flutter_ohos',
+          'src',
+          'main',
+          'ets',
+          'embedding',
+          'engine',
+          'systemchannels',
+          'NavigationChannel.ets',
+      );
+      if (!fs.existsSync(channelPath)) {
+        continue;
+      }
+      const originalContent = fs.readFileSync(channelPath, 'utf8');
+      if (!originalContent.includes(before)) {
+        continue;
+      }
+      fs.writeFileSync(channelPath, originalContent.replace(before, after));
+      console.log(`[flclash] patched NavigationChannel: ${channelPath}`);
+    }
+  }
+}
+
+function patchFlutterSdkNavigationChannel(flutterSdk) {
+  const channelPath = path.join(
+      path.resolve(flutterSdk),
+      'engine',
+      'src',
+      'flutter',
+      'shell',
+      'platform',
+      'ohos',
+      'flutter_embedding',
+      'flutter',
+      'src',
+      'main',
+      'ets',
+      'embedding',
+      'engine',
+      'systemchannels',
+      'NavigationChannel.ets',
+  );
+  if (!fs.existsSync(channelPath)) {
+    return () => {};
+  }
+
+  const before = `    const argsMap = call.args as Map<string, string>;
+    const currentUri: string = argsMap.get('uri') ?? '';
+`;
+  const after = `    const uriArg = call.argument('uri');
+    const currentUri: string = typeof uriArg === 'string' ? uriArg : '';
+`;
+  const originalContent = fs.readFileSync(channelPath, 'utf8');
+  if (!originalContent.includes(before)) {
+    return () => {};
+  }
+
+  fs.writeFileSync(channelPath, originalContent.replace(before, after));
+  console.log(`[flclash] patched Flutter SDK NavigationChannel: ${channelPath}`);
+  return () => {
+    fs.writeFileSync(channelPath, originalContent);
+  };
+}
+
+function patchFlutterEmbeddingHar(flutterSdk) {
+  const scriptPath = path.join(
+      appHome,
+      '..',
+      'scripts',
+      'ohos',
+      'patch_flutter_embedding_har.py',
+  );
+  if (!fs.existsSync(scriptPath)) {
+    return;
+  }
+  const candidates = [
+    path.join(
+        flutterSdk,
+        'bin',
+        'cache',
+        'artifacts',
+        'engine',
+        'ohos-arm64',
+        'flutter_embedding_debug.har',
+    ),
+    path.join(
+        flutterSdk,
+        'bin',
+        'cache',
+        'artifacts',
+        'engine',
+        'ohos-arm64-profile',
+        'flutter_embedding_profile.har',
+    ),
+    path.join(
+        flutterSdk,
+        'bin',
+        'cache',
+        'artifacts',
+        'engine',
+        'ohos-arm64-release',
+        'flutter_embedding_release.har',
+    ),
+  ].filter((candidate) => fs.existsSync(candidate));
+  if (candidates.length === 0) {
+    return;
+  }
+  childProcess.execFileSync('python3', [scriptPath, ...candidates], {
+    stdio: 'inherit',
+  });
+}
+
+function syncLatestOhosCoreLibraries(appHome) {
+  const rootDir = path.resolve(appHome, '..');
+  const sourcePath = path.join(
+      rootDir,
+      'libclash',
+      'ohos',
+      'arm64-v8a',
+      'libclash.so',
+  );
+  if (!fs.existsSync(sourcePath)) {
+    return;
+  }
+
+  const targetPaths = [
+    path.join(appHome, 'entry', 'libs', 'arm64-v8a', 'libclash.so'),
+    path.join(appHome, 'entry', 'libs', 'arm64', 'libclash.so'),
+  ];
+
+  let copied = false;
+  for (const targetPath of targetPaths) {
+    copied = copyFileIfChanged(sourcePath, targetPath) || copied;
+  }
+
+  if (copied) {
+    console.log(
+        `[flclash] synced OHOS core library from ${sourcePath} to entry/libs`,
+    );
+  }
+}
+
+function buildLatestOhosBundledCoreExecutable(appHome) {
+  const rootDir = path.resolve(appHome, '..');
+  const outputPath = path.join(
+      rootDir,
+      'ohos',
+      'entry',
+      'libs',
+      'arm64',
+      'libFlClashCore.so',
+  );
+  ensureDirSync(path.dirname(outputPath));
+  childProcess.execFileSync('go', [
+    'build',
+    '-ldflags=-w -s -X github.com/metacubex/mihomo/component/http.forceConservativeTransport=true',
+    '-tags=with_gvisor',
+    '-o',
+    outputPath,
+  ], {
+    cwd: path.join(rootDir, 'core'),
+    env: {
+      ...process.env,
+      GOOS: 'linux',
+      GOARCH: 'arm64',
+      CGO_ENABLED: '0',
+    },
+    stdio: 'inherit',
+  });
+  try {
+    fs.chmodSync(outputPath, 0o755);
+  } catch (_) {
+  }
+  console.log(
+      `[flclash] built OHOS bundled executable core: ${outputPath}`,
+  );
+}
+
+function syncLatestOhosBundledCoreExecutable(appHome) {
+  const rootDir = path.resolve(appHome, '..');
+  const sourcePath = path.join(
+      rootDir,
+      'ohos',
+      'entry',
+      'libs',
+      'arm64',
+      'libFlClashCore.so',
+  );
+  if (!fs.existsSync(sourcePath)) {
+    return;
+  }
+
+  const targetPath = path.join(rootDir, 'assets', 'data', 'FlClashCore');
+  if (!copyFileIfChanged(sourcePath, targetPath)) {
+    return;
+  }
+
+  try {
+    fs.chmodSync(targetPath, 0o755);
+  } catch (_) {
+  }
+  console.log(
+      `[flclash] synced OHOS bundled executable core from ${sourcePath} to ${targetPath}`,
+  );
+}
+
 const upstreamWrapperPath = path.join(
     path.resolve(flutterSdk),
     'engine',
@@ -479,16 +764,25 @@ prepareOpenHarmonySigningAssets({
   bundleName: 'com.follow.clash',
 });
 
+syncLatestOhosCoreLibraries(appHome);
+buildLatestOhosBundledCoreExecutable(appHome);
+syncLatestOhosBundledCoreExecutable(appHome);
+patchFlutterEmbeddingHar(flutterSdk);
 prepareBundledHvigorWorkspace();
 prepareNodePath();
+installLegacyFsCompat();
+configureLegacyFsCompatForChildNode();
 const restorePackage = patchOhosPackageForNativeHar(appHome, flutterSdk);
 const restoreEntryPackage = patchEntryHarDependencies(appHome);
 restoreCustomGeneratedPluginRegistrant(appHome);
 const restoreFs = patchHvigorConfigForUpstreamWrapper();
+patchFlutterOhosNavigationChannel(appHome);
+const restoreFlutterSdkNavigationChannel = patchFlutterSdkNavigationChannel(flutterSdk);
 process.on('exit', () => {
   restoreEntryPackage();
   restorePackage();
   restoreFs();
+  restoreFlutterSdkNavigationChannel();
 });
 
 require(upstreamWrapperPath);

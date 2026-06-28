@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:animations/animations.dart';
@@ -21,6 +22,13 @@ import 'l10n/l10n.dart';
 import 'models/models.dart';
 import 'plugins/app.dart';
 import 'providers/providers.dart';
+
+bool shouldSkipOhosUiCoreStartup(ProviderContainer container) {
+  return shouldUseOhosVpnConfigOnly(
+    isOhos: system.isOhos,
+    vpnEnabled: container.read(vpnStateProvider).vpnProps.enable,
+  );
+}
 
 class GlobalState {
   static GlobalState? _instance;
@@ -309,7 +317,9 @@ class GlobalState {
     }
     if (system.isOhos) {
       final success = await app?.openExternalUrl(url) ?? false;
-      commonPrint.log('[external-url] ohos open result url=$url success=$success');
+      commonPrint.log(
+        '[external-url] ohos open result url=$url success=$success',
+      );
       if (!success) {
         showNotifier('打开外部链接失败');
       }
@@ -336,8 +346,12 @@ class GlobalState {
     print('[BOOT] attach initApp start');
     container.read(systemActionProvider.notifier).updateTray();
     print('[BOOT] attach updateTray done');
-    container.read(profilesActionProvider.notifier).autoUpdateProfiles();
-    print('[BOOT] attach autoUpdateProfiles done');
+    if (!shouldSkipOhosUiCoreStartup(container)) {
+      container.read(profilesActionProvider.notifier).autoUpdateProfiles();
+      print('[BOOT] attach autoUpdateProfiles done');
+    } else {
+      print('[BOOT] attach autoUpdateProfiles skipped for ohos config-only');
+    }
     container.read(commonActionProvider.notifier).autoCheckUpdate();
     print('[BOOT] attach autoCheckUpdate triggered');
     autoLaunch?.updateStatus(container.read(appSettingProvider).autoLaunch);
@@ -354,16 +368,96 @@ class GlobalState {
     print('[BOOT] attach disclaimer done');
     await _showCrashlyticsTip();
     print('[BOOT] attach crashlyticsTip done');
-    await container.read(coreActionProvider.notifier).connectCore();
-    print('[BOOT] attach connectCore done');
-    await container.read(coreActionProvider.notifier).initCore();
-    print('[BOOT] attach initCore done');
-    await container.read(setupActionProvider.notifier).initStatus();
-    print('[BOOT] attach initStatus done');
+    if (system.isOhos) {
+      await appPath.initOhosPaths();
+      print('[BOOT] attach initOhosPaths done');
+    }
+    final handledPendingDebugVpn = await _handlePendingDebugVpnStart();
+    final skipOhosUiCoreStartup = shouldSkipOhosUiCoreStartup(container);
+    print(
+      '[BOOT] attach pendingDebugVpn done handled=$handledPendingDebugVpn skipOhosUiCoreStartup=$skipOhosUiCoreStartup',
+    );
+    if (!handledPendingDebugVpn && !skipOhosUiCoreStartup) {
+      await container.read(coreActionProvider.notifier).connectCore();
+      print('[BOOT] attach connectCore done');
+      await container.read(coreActionProvider.notifier).initCore();
+      print('[BOOT] attach initCore done');
+      await container.read(setupActionProvider.notifier).initStatus();
+      print('[BOOT] attach initStatus done');
+    } else {
+      print('[BOOT] attach connectCore skipped');
+      print('[BOOT] attach initCore skipped');
+      await container.read(setupActionProvider.notifier).initStatus();
+      print('[BOOT] attach initStatus done after core skip');
+    }
     container.read(initProvider.notifier).value = true;
     print('[BOOT] attach initProvider done');
     permissions.check();
     print('[BOOT] attach permissions check triggered');
+  }
+
+  Future<bool> _handlePendingDebugVpnStart() async {
+    if (!system.isOhos) {
+      return false;
+    }
+    final pending = await app?.consumePendingDebugVpnStart();
+    if (pending == null) {
+      return false;
+    }
+    final stack = pending['stack']?.toString();
+    final ipv6 = pending['ipv6'] == true;
+    final allowBypass = pending['allowBypass'] != false;
+    commonPrint.log(
+      '[OHOS-DEBUG-VPN] consume pending start stack=$stack ipv6=$ipv6 allowBypass=$allowBypass',
+    );
+    if (stack != null && stack.isNotEmpty) {
+      final currentStack = container.read(
+        patchClashConfigProvider.select((state) => state.tun.stack),
+      );
+      final nextStack = TunStack.values.firstWhere(
+        (item) => item.name == stack,
+        orElse: () => currentStack,
+      );
+      container
+          .read(patchClashConfigProvider.notifier)
+          .update((state) => state.copyWith.tun(stack: nextStack));
+    }
+    container
+        .read(vpnSettingProvider.notifier)
+        .update(
+          (state) => state.copyWith(ipv6: ipv6, allowBypass: allowBypass),
+        );
+    final prepared = await container
+        .read(setupActionProvider.notifier)
+        .prepareProfileConfigOnly(force: true);
+    commonPrint.log('[OHOS-DEBUG-VPN] prepare profile result=$prepared');
+    if (!prepared) {
+      return true;
+    }
+    final vpnState = container.read(vpnStateProvider);
+    final setupParams = container
+        .read(setupActionProvider.notifier)
+        .setupParams;
+    commonPrint.log(
+      '[OHOS-DEBUG-VPN] direct start stack=${vpnState.stack.name} '
+      'ipv6=${vpnState.vpnProps.ipv6} allowBypass=${vpnState.vpnProps.allowBypass}',
+    );
+    final homeDir = await appPath.homeDirPath;
+    commonPrint.log(
+      '[OHOS-DEBUG-VPN] direct start selectedMap=${setupParams.selectedMap}',
+    );
+    final started = await app?.startVpn(
+      stack: vpnState.stack.name,
+      ipv6: vpnState.vpnProps.ipv6,
+      allowBypass: vpnState.vpnProps.allowBypass,
+      initParamsJson: json.encode({
+        'home-dir': homeDir,
+        'version': container.read(versionProvider),
+      }),
+      setupParamsJson: json.encode(setupParams.toJson()),
+    );
+    commonPrint.log('[OHOS-DEBUG-VPN] direct start result=$started');
+    return true;
   }
 
   Future<void> _handleFailedPreference() async {

@@ -19,6 +19,125 @@ import 'package:yaml/yaml.dart';
 
 part 'generated/action.g.dart';
 
+final _selectedMapMetaValuePattern = RegExp(r'^(剩余流量：|距离下次重置剩余：|套餐到期：)');
+
+bool isInvalidSelectedProxyName(String proxyName) {
+  final trimmed = proxyName.trim();
+  if (trimmed.isEmpty) {
+    return true;
+  }
+  return _selectedMapMetaValuePattern.hasMatch(trimmed);
+}
+
+String? inferGlobalSelection({
+  required Map<String, String> selectedMap,
+  required Iterable<String> groupNames,
+}) {
+  final availableNames = groupNames
+      .where((name) => name.isNotEmpty && name != GroupName.GLOBAL.name)
+      .toSet();
+  for (final groupName in selectedMap.keys) {
+    if (groupName == GroupName.GLOBAL.name) {
+      continue;
+    }
+    if (availableNames.isEmpty || availableNames.contains(groupName)) {
+      return groupName;
+    }
+  }
+  if (availableNames.isNotEmpty) {
+    return availableNames.first;
+  }
+  return null;
+}
+
+bool _selectedMapsEqual(Map<String, String> current, Map<String, String> next) {
+  if (identical(current, next)) {
+    return true;
+  }
+  if (current.length != next.length) {
+    return false;
+  }
+  for (final entry in current.entries) {
+    if (next[entry.key] != entry.value) {
+      return false;
+    }
+  }
+  return true;
+}
+
+Map<String, String> sanitizeSelectedMap({
+  required List<Group> groups,
+  required Map<String, String> selectedMap,
+}) {
+  if (selectedMap.isEmpty) {
+    return selectedMap;
+  }
+
+  final sanitized = <String, String>{};
+  selectedMap.forEach((groupName, proxyName) {
+    if (isInvalidSelectedProxyName(proxyName)) {
+      return;
+    }
+    if (groups.isEmpty) {
+      sanitized[groupName] = proxyName;
+      return;
+    }
+    final group = groups.where((item) => item.name == groupName).firstOrNull;
+    if (group == null) {
+      return;
+    }
+    final exists = group.all.any((proxy) => proxy.name == proxyName);
+    if (exists) {
+      sanitized[groupName] = proxyName;
+    }
+  });
+  if (sanitized.length != selectedMap.length) {
+    commonPrint.log('[selected-map] sanitized from=$selectedMap to=$sanitized');
+  }
+  return sanitized;
+}
+
+void persistSanitizedSelectedMap(Ref ref, Map<String, String> selectedMap) {
+  final currentProfile = ref.read(currentProfileProvider);
+  if (currentProfile == null) return;
+  if (_selectedMapsEqual(currentProfile.selectedMap, selectedMap)) {
+    return;
+  }
+  commonPrint.log(
+    '[selected-map] persist sanitized profile=${currentProfile.id} '
+    'from=${currentProfile.selectedMap} to=$selectedMap',
+  );
+  ref
+      .read(profilesProvider.notifier)
+      .put(currentProfile.copyWith(selectedMap: selectedMap));
+}
+
+bool shouldUseOhosVpnConfigOnly({
+  required bool isOhos,
+  required bool vpnEnabled,
+}) {
+  return isOhos && vpnEnabled;
+}
+
+bool shouldUseCoreProfileConfigForSetup({
+  required bool isOhos,
+  required bool applyCore,
+}) {
+  return !(isOhos && !applyCore);
+}
+
+bool resolveUseCoreProfileConfigForSetup({
+  required bool? explicitUseCoreProfileConfig,
+  required bool isOhos,
+  required bool applyCore,
+}) {
+  return explicitUseCoreProfileConfig ??
+      shouldUseCoreProfileConfigForSetup(
+        isOhos: isOhos,
+        applyCore: applyCore,
+      );
+}
+
 @Riverpod(keepAlive: true)
 class CommonAction extends _$CommonAction {
   @override
@@ -139,40 +258,137 @@ class CommonAction extends _$CommonAction {
 class SetupAction extends _$SetupAction {
   Timer? _updateTimer;
   DateTime? startTime;
+  List<String> _lastProfileGroupNames = const [];
 
   bool get isStart => startTime != null && startTime!.isBeforeNow;
 
   @override
   void build() {}
 
+  SetupParams get setupParams => _setupParams;
+
+  Map<String, String> _sanitizeSelectedMap(Map<String, String> selectedMap) {
+    final groups = ref.read(groupsProvider);
+    return sanitizeSelectedMap(groups: groups, selectedMap: selectedMap);
+  }
+
+  Map<String, String> _withGlobalSelectionFallback(
+    Map<String, String> selectedMap,
+  ) {
+    final mode = ref.read(
+      patchClashConfigProvider.select((state) => state.mode),
+    );
+    if (mode != Mode.global || selectedMap.containsKey(GroupName.GLOBAL.name)) {
+      return selectedMap;
+    }
+    final groups = ref.read(groupsProvider);
+    final fallback = inferGlobalSelection(
+      selectedMap: selectedMap,
+      groupNames: groups.isNotEmpty
+          ? groups.map((group) => group.name)
+          : _lastProfileGroupNames,
+    );
+    if (fallback == null) {
+      return selectedMap;
+    }
+    final nextSelectedMap = Map<String, String>.from(selectedMap)
+      ..[GroupName.GLOBAL.name] = fallback;
+    commonPrint.log(
+      '[selected-map] inferred GLOBAL fallback=$fallback '
+      'from=$selectedMap groups=${groups.map((group) => group.name).join(",")} '
+      'profileGroups=${_lastProfileGroupNames.join(",")}',
+    );
+    return nextSelectedMap;
+  }
+
   SetupParams get _setupParams {
-    final selectedMap = ref.read(selectedMapProvider);
+    final selectedMap = _withGlobalSelectionFallback(
+      _sanitizeSelectedMap(ref.read(selectedMapProvider)),
+    );
     final testUrl = ref.read(
       appSettingProvider.select((state) => state.testUrl),
     );
     return SetupParams(selectedMap: selectedMap, testUrl: testUrl);
   }
 
+  Future<Map<String, dynamic>> _getProfileConfigMap(
+    int profileId, {
+    bool useCore = true,
+  }) async {
+    final profilePath = await appPath.getProfilePath(profileId.toString());
+    Map<String, dynamic> data;
+    if (useCore) {
+      data = await coreController.getConfig(profileId);
+    } else {
+      final profileFile = File(profilePath);
+      final content = await profileFile.readAsString();
+      final rawYaml = loadYaml(content);
+      if (rawYaml is! YamlMap) {
+        throw 'profile config is invalid';
+      }
+      data = Map<String, dynamic>.from(
+        jsonDecode(jsonEncode(rawYaml)) as Map<String, dynamic>,
+      );
+    }
+    if (data.containsKey('rule') && !data.containsKey('rules')) {
+      data['rules'] = data['rule'];
+      data.remove('rule');
+    }
+    try {
+      final rules = (data['rules'] as List? ?? const [])
+          .map((item) => item.toString())
+          .toList();
+      final huaweiRules = rules
+          .where(
+            (rule) =>
+                rule.contains('httpdns.platform.dbankcloud.com') ||
+                rule.contains('httpdns-browser.platform.dbankcloud.cn') ||
+                rule.contains('browsercfg-drcn.cloud.dbankcloud.cn'),
+          )
+          .take(12)
+          .join(' || ');
+      commonPrint.log(
+        '[profile-config] profile=$profileId useCore=$useCore path=$profilePath '
+        'rulesHead=${rules.take(12).join(" || ")} huaweiRules=$huaweiRules',
+      );
+    } catch (e) {
+      commonPrint.log(
+        '[profile-config] profile=$profileId useCore=$useCore path=$profilePath summary failed error=$e',
+      );
+    }
+    return data;
+  }
+
   Future<bool> fullSetup() async {
     if (!ref.read(initProvider)) return false;
     ref.read(delayDataSourceProvider.notifier).value = {};
-    final applied = await applyProfile(force: true);
+    final useOhosVpnConfigOnly = shouldUseOhosVpnConfigOnly(
+      isOhos: system.isOhos,
+      vpnEnabled: ref.read(vpnStateProvider).vpnProps.enable,
+    );
+    final applied = useOhosVpnConfigOnly
+        ? await prepareProfileConfigOnly(force: true)
+        : await applyProfile(force: true);
     ref.read(logsProvider.notifier).value = FixedList(500);
     ref.read(requestsProvider.notifier).value = FixedList(500);
     return applied;
   }
 
-  Future<void> _handleStart() async {
+  Future<void> _handleStart({bool syncCoreState = true}) async {
     startTime ??= DateTime.now();
     //The local status must be updated when performing the run task
     ref.read(commonActionProvider.notifier).updateRunTime();
-    ref.read(commonActionProvider.notifier).updateTraffic();
-    if (!ref.read(suspendProvider)) {
+    if (syncCoreState) {
+      ref.read(commonActionProvider.notifier).updateTraffic();
+    }
+    if (syncCoreState && !ref.read(suspendProvider)) {
       await coreController.startListener();
     }
     _updateTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       ref.read(commonActionProvider.notifier).updateRunTime();
-      ref.read(commonActionProvider.notifier).updateTraffic();
+      if (syncCoreState) {
+        ref.read(commonActionProvider.notifier).updateTraffic();
+      }
     });
   }
 
@@ -180,11 +396,13 @@ class SetupAction extends _$SetupAction {
     startTime = await service?.getRunTime();
   }
 
-  Future handleStop() async {
+  Future handleStop({bool syncCoreState = true}) async {
     startTime = null;
     _updateTimer?.cancel();
     _updateTimer = null;
-    await coreController.stopListener();
+    if (syncCoreState) {
+      await coreController.stopListener();
+    }
   }
 
   Future<void> initStatus() async {
@@ -199,17 +417,27 @@ class SetupAction extends _$SetupAction {
     final status = isStart == true
         ? true
         : ref.read(appSettingProvider).autoRun;
+    final useOhosVpnConfigOnly = shouldUseOhosVpnConfigOnly(
+      isOhos: system.isOhos,
+      vpnEnabled: ref.read(vpnStateProvider).vpnProps.enable,
+    );
     if (status == true) {
       await updateStatus(true, isInit: true);
     } else {
-      final applied = await applyProfile(force: true);
+      final applied = useOhosVpnConfigOnly
+          ? await prepareProfileConfigOnly(force: true)
+          : await applyProfile(force: true);
       if (!applied) {
-        await _fallbackCurrentProfile();
+        await _fallbackCurrentProfile(
+          useOhosVpnConfigOnly: useOhosVpnConfigOnly,
+        );
       }
     }
   }
 
-  Future<void> _fallbackCurrentProfile() async {
+  Future<void> _fallbackCurrentProfile({
+    bool useOhosVpnConfigOnly = false,
+  }) async {
     final currentProfileId = ref.read(currentProfileIdProvider);
     final profiles = ref.read(profilesProvider);
     for (final profile in profiles) {
@@ -217,7 +445,9 @@ class SetupAction extends _$SetupAction {
         continue;
       }
       ref.read(currentProfileIdProvider.notifier).value = profile.id;
-      final applied = await applyProfile(force: true, silence: true);
+      final applied = useOhosVpnConfigOnly
+          ? await prepareProfileConfigOnly(force: true)
+          : await applyProfile(force: true, silence: true);
       if (applied) {
         return;
       }
@@ -225,32 +455,58 @@ class SetupAction extends _$SetupAction {
   }
 
   Future<void> updateStatus(bool isStart, {bool isInit = false}) async {
+    final useOhosVpnConfigOnly = shouldUseOhosVpnConfigOnly(
+      isOhos: system.isOhos,
+      vpnEnabled: ref.read(vpnStateProvider).vpnProps.enable,
+    );
     if (isStart) {
       if (!isInit) {
-        final res = await ref
-            .read(coreActionProvider.notifier)
-            .tryStartCore(true);
-        if (res) return;
+        if (!useOhosVpnConfigOnly) {
+          final res = await ref
+              .read(coreActionProvider.notifier)
+              .tryStartCore(true);
+          if (res) return;
+        }
         if (!ref.read(initProvider)) return;
-        await _handleStart();
-        applyProfileDebounce(force: true, silence: true);
+        if (useOhosVpnConfigOnly) {
+          final prepared = await prepareProfileConfigOnly(force: true);
+          if (!prepared) {
+            ref.read(runTimeProvider.notifier).value = null;
+            return;
+          }
+          await _handleStart(syncCoreState: false);
+        } else {
+          await _handleStart();
+          applyProfileDebounce(force: true, silence: true);
+        }
       } else {
         globalState.needInitStatus = false;
         ref.read(runTimeProvider.notifier).value = 0;
         try {
-          await applyProfile(
-            force: true,
-            preloadInvoke: () async {
-              await _handleStart();
-            },
-          );
+          if (useOhosVpnConfigOnly) {
+            final prepared = await prepareProfileConfigOnly(force: true);
+            if (!prepared) {
+              ref.read(runTimeProvider.notifier).value = null;
+              return;
+            }
+            await _handleStart(syncCoreState: false);
+          } else {
+            await applyProfile(
+              force: true,
+              preloadInvoke: () async {
+                await _handleStart();
+              },
+            );
+          }
         } catch (_) {
           ref.read(runTimeProvider.notifier).value = null;
         }
       }
     } else {
-      await handleStop();
-      coreController.resetTraffic();
+      await handleStop(syncCoreState: !useOhosVpnConfigOnly);
+      if (!useOhosVpnConfigOnly) {
+        coreController.resetTraffic();
+      }
       ref.read(trafficsProvider.notifier).clear();
       ref.read(totalTrafficProvider.notifier).value = const Traffic();
       ref.read(runTimeProvider.notifier).value = null;
@@ -323,9 +579,18 @@ class SetupAction extends _$SetupAction {
     );
   }
 
+  Future<bool> prepareProfileConfigOnly({bool force = false}) async {
+    return _setupConfig(
+      force: force,
+      silence: true,
+      applyCore: false,
+    );
+  }
+
   Future<VM2<String, String>> getProfile({
     required SetupState setupState,
     required PatchClashConfig patchConfig,
+    bool useCoreProfileConfig = true,
   }) async {
     final profileId = setupState.profileId;
     if (profileId == null) return const VM2('', '');
@@ -338,7 +603,10 @@ class SetupAction extends _$SetupAction {
     final overrideDns = ref.read(overrideDnsProvider);
     final appendSystemDns = networkVM2.a;
     final routeMode = networkVM2.b;
-    final configMap = await coreController.getConfig(profileId);
+    final configMap = await _getProfileConfigMap(
+      profileId,
+      useCore: useCoreProfileConfig,
+    );
     String? scriptContent;
     final List<Rule> addedRules = [];
     final List<ProxyGroup> proxyGroups = [];
@@ -413,6 +681,8 @@ class SetupAction extends _$SetupAction {
   Future<bool> _setupConfig({
     bool force = false,
     bool silence = false,
+    bool applyCore = true,
+    bool? useCoreProfileConfig,
     VoidCallback? preloadInvoke,
     FutureOr Function()? onUpdated,
   }) async {
@@ -433,6 +703,12 @@ class SetupAction extends _$SetupAction {
     final realTunEnable = ref.read(realTunEnableProvider);
     final realPatchConfig = patchConfig.copyWith.tun(enable: realTunEnable);
     final setupState = await ref.read(setupStateProvider(profile.id).future);
+    final resolvedUseCoreProfileConfig =
+        resolveUseCoreProfileConfigForSetup(
+          explicitUseCoreProfileConfig: useCoreProfileConfig,
+          isOhos: system.isOhos,
+          applyCore: applyCore,
+        );
     if (system.isAndroid) {
       globalState.lastVpnState = ref.read(vpnStateProvider);
       final sharedState = ref.read(sharedStateProvider);
@@ -441,6 +717,7 @@ class SetupAction extends _$SetupAction {
     final vm2 = await getProfile(
       setupState: setupState,
       patchConfig: realPatchConfig,
+      useCoreProfileConfig: resolvedUseCoreProfileConfig,
     );
     final yamlString = vm2.a;
     final yamlMd5 = vm2.b;
@@ -448,7 +725,15 @@ class SetupAction extends _$SetupAction {
       final yamlMap = loadYaml(yamlString);
       if (yamlMap is YamlMap) {
         final raw = jsonDecode(jsonEncode(yamlMap)) as Map<String, dynamic>;
+        final proxyGroups = (raw['proxy-groups'] as List? ?? const [])
+            .whereType<Map>()
+            .map((item) => item['name']?.toString() ?? '')
+            .where((name) => name.isNotEmpty)
+            .toList();
+        _lastProfileGroupNames = proxyGroups;
         final globalUa = raw['global-ua'];
+        final dns = Map<String, dynamic>.from(raw['dns'] as Map? ?? const {});
+        final tun = Map<String, dynamic>.from(raw['tun'] as Map? ?? const {});
         final proxyProviders = Map<String, dynamic>.from(
           raw['proxy-providers'] ?? const {},
         );
@@ -461,7 +746,30 @@ class SetupAction extends _$SetupAction {
             })
             .join('; ');
         commonPrint.log(
-          '[setup-profile] profile=${profile.id} ua=$globalUa providers=$providerSummary',
+          '[setup-profile] profile=${profile.id} ua=$globalUa '
+          'dnsEnable=${dns['enable']} dnsListen=${dns['listen']} '
+          'dnsNameserver=${dns['nameserver']} defaultDns=${dns['default-nameserver']} '
+          'enhancedMode=${dns['enhanced-mode']} tunDnsHijack=${tun['dns-hijack']} '
+          'tunRouteAddress=${tun['route-address']} '
+          'groups=${proxyGroups.join(",")} providers=$providerSummary',
+        );
+        final rules = (raw['rules'] as List? ?? const [])
+            .map((item) => item.toString())
+            .toList();
+        commonPrint.log(
+          '[setup-profile] rulesHead=${rules.take(12).join(" || ")}',
+        );
+        final directHuaweiHttpDnsRules = rules
+            .where(
+              (rule) =>
+                  rule.contains('httpdns.platform.dbankcloud.com') ||
+                  rule.contains('httpdns-browser.platform.dbankcloud.cn') ||
+                  rule.contains('browsercfg-drcn.cloud.dbankcloud.cn'),
+            )
+            .take(12)
+            .join(' || ');
+        commonPrint.log(
+          '[setup-profile] huaweiRules=$directHuaweiHttpDnsRules',
         );
       }
     } catch (e) {
@@ -482,6 +790,12 @@ class SetupAction extends _$SetupAction {
           'exists=$configExists bytes=$configLength md5=$yamlMd5',
         );
         globalState.lastConfigMd5 = yamlMd5;
+        if (!applyCore) {
+          commonPrint.log(
+            '[setup-profile] skip core setup and only persist config',
+          );
+          return true;
+        }
         final message = await coreController.setupConfig(
           setupState: setupState,
           params: _setupParams,
@@ -583,15 +897,46 @@ class CoreAction extends _$CoreAction {
   void build() {}
 
   Future<void> initCore() async {
-    final isInit = await coreController.isInit;
-
     final version = ref.read(versionProvider);
+    commonPrint.log('[OHOS-CORE] initCore enter version=$version');
+    bool isInit;
+    try {
+      commonPrint.log('[OHOS-CORE] initCore before isInit');
+      final stopwatch = Stopwatch()..start();
+      isInit = await coreController.isInit;
+      stopwatch.stop();
+      commonPrint.log(
+        '[OHOS-CORE] initCore after isInit value=$isInit elapsed=${stopwatch.elapsedMilliseconds}ms',
+      );
+    } catch (e, s) {
+      commonPrint.log(
+        '[OHOS-CORE] initCore isInit threw error=$e stack=$s',
+        logLevel: LogLevel.error,
+      );
+      rethrow;
+    }
+
     if (!isInit) {
-      final res = await coreController.init(version);
-      commonPrint.log('init result: $res');
+      try {
+        commonPrint.log('[OHOS-CORE] initCore before init version=$version');
+        final stopwatch = Stopwatch()..start();
+        final res = await coreController.init(version);
+        stopwatch.stop();
+        commonPrint.log(
+          '[OHOS-CORE] initCore after init result=$res elapsed=${stopwatch.elapsedMilliseconds}ms',
+        );
+      } catch (e, s) {
+        commonPrint.log(
+          '[OHOS-CORE] initCore init threw error=$e stack=$s',
+          logLevel: LogLevel.error,
+        );
+        rethrow;
+      }
     } else {
+      commonPrint.log('[OHOS-CORE] initCore skip init and update groups');
       await ref.read(proxiesActionProvider.notifier).updateGroups();
     }
+    commonPrint.log('[OHOS-CORE] initCore exit');
   }
 
   Future<void> connectCore() async {
@@ -894,7 +1239,7 @@ class ProxiesAction extends _$ProxiesAction {
   Future<void> updateGroups() async {
     try {
       commonPrint.log('updateGroups');
-      ref.read(groupsProvider.notifier).value = await retry(
+      final groups = await retry(
         task: () async {
           final sortType = ref.read(
             proxiesStyleSettingProvider.select((state) => state.sortType),
@@ -903,8 +1248,13 @@ class ProxiesAction extends _$ProxiesAction {
           final testUrl = ref.read(
             appSettingProvider.select((state) => state.testUrl),
           );
-          final selectedMap = ref.read(
-            currentProfileProvider.select((state) => state?.selectedMap ?? {}),
+          final selectedMap = sanitizeSelectedMap(
+            groups: ref.read(groupsProvider),
+            selectedMap: ref.read(
+              currentProfileProvider.select(
+                (state) => state?.selectedMap ?? {},
+              ),
+            ),
           );
           return coreController.getProxiesGroups(
             selectedMap: selectedMap,
@@ -914,6 +1264,16 @@ class ProxiesAction extends _$ProxiesAction {
           );
         },
         retryIf: (res) => res.isEmpty,
+      );
+      ref.read(groupsProvider.notifier).value = groups;
+      persistSanitizedSelectedMap(
+        ref,
+        sanitizeSelectedMap(
+          groups: groups,
+          selectedMap: ref.read(
+            currentProfileProvider.select((state) => state?.selectedMap ?? {}),
+          ),
+        ),
       );
     } catch (e) {
       commonPrint.log('updateGroups error: $e');
@@ -990,6 +1350,12 @@ class ProfilesAction extends _$ProfilesAction {
   void build() {}
 
   void updateCurrentSelectedMap(String groupName, String proxyName) {
+    if (isInvalidSelectedProxyName(proxyName)) {
+      commonPrint.log(
+        '[selected-map] reject invalid selection group=$groupName proxy=$proxyName',
+      );
+      return;
+    }
     final currentProfile = ref.read(currentProfileProvider);
     if (currentProfile != null &&
         currentProfile.selectedMap[groupName] != proxyName) {

@@ -30,6 +30,12 @@ class _CoreContainerState extends ConsumerState<CoreManager>
   void initState() {
     super.initState();
     coreEventManager.addListener(this);
+    if (system.isOhos) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        commonPrint.log('[OHOS-CORE] force startLog on init');
+        coreController.startLog();
+      });
+    }
     ref.listenManual(currentProfileIdProvider, (prev, next) {
       commonPrint.log(
         '[profile-select-core] currentProfileId changed prev=$prev next=$next',
@@ -65,6 +71,9 @@ class _CoreContainerState extends ConsumerState<CoreManager>
       prev,
       next,
     ) {
+      if (system.isOhos) {
+        commonPrint.log('[OHOS-CORE] startLog listener toggle next=$next');
+      }
       if (next) {
         coreController.startLog();
       } else {

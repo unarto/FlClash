@@ -631,12 +631,22 @@ SharedState sharedState(Ref ref) {
       systemProxy: vpnSetting.systemProxy,
       port: port,
       ipv6: vpnSetting.ipv6,
-      dnsHijacking: vpnSetting.dnsHijacking,
+      dnsHijacking: resolveVpnDnsHijacking(
+        isOhos: system.isOhos,
+        dnsHijacking: vpnSetting.dnsHijacking,
+      ),
       accessControlProps: vpnSetting.accessControlProps,
       allowBypass: vpnSetting.allowBypass,
       bypassDomain: bypassDomain,
     ),
   );
+}
+
+bool resolveVpnDnsHijacking({
+  required bool isOhos,
+  required bool dnsHijacking,
+}) {
+  return dnsHijacking;
 }
 
 @riverpod

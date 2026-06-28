@@ -25,6 +25,9 @@ var (
 
 func debugCoreLog(format string, args ...interface{}) {
 	if coreDebugLogPath == "" {
+		coreDebugLogPath = "/data/storage/el2/base/files/flclash-core.log"
+	}
+	if coreDebugLogPath == "" {
 		return
 	}
 	file, err := os.OpenFile(coreDebugLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -106,13 +109,38 @@ func startServer(socketPath string) {
 	}
 }
 
+func prepareServerProcess(socketPathChar, logPathChar *C.char) (string, string) {
+	socketPath := takeCString(socketPathChar)
+	logPath := takeCString(logPathChar)
+	if logPath == "" {
+		logPath = filepath.Join(filepath.Dir(socketPath), "flclash-core.log")
+	}
+	coreDebugLogPath = logPath
+	return socketPath, logPath
+}
+
 //export startServerProcess
 func startServerProcess(socketPathChar, logPathChar *C.char) {
-	socketPath := takeCString(socketPathChar)
-	coreDebugLogPath = takeCString(logPathChar)
-	if coreDebugLogPath == "" {
-		coreDebugLogPath = filepath.Join(filepath.Dir(socketPath), "flclash-core.log")
-	}
+	socketPath, _ := prepareServerProcess(socketPathChar, logPathChar)
 	debugCoreLog("startServerProcess socket=%s", socketPath)
 	startServer(socketPath)
+}
+
+//export startServerProcessDetached
+func startServerProcessDetached(socketPathChar, logPathChar *C.char) {
+	socketPath, logPath := prepareServerProcess(socketPathChar, logPathChar)
+	debugCoreLog("startServerProcessDetached socket=%s", socketPath)
+	go func(socketPath, logPath string) {
+		coreDebugLogPath = logPath
+		defer func() {
+			if recoverValue := recover(); recoverValue != nil {
+				debugCoreLog(
+					"startServerProcessDetached panic socket=%s panic=%v",
+					socketPath,
+					recoverValue,
+				)
+			}
+		}()
+		startServer(socketPath)
+	}(socketPath, logPath)
 }

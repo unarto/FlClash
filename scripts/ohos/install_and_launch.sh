@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+KEEP_AWAKE_SCRIPT="$ROOT_DIR/scripts/ohos/keep_awake.sh"
 DEFAULT_BUNDLE_NAME="com.follow.clash"
 DEFAULT_ABILITY_NAME="EntryAbility"
 DEVECO_HDC="/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc"
@@ -19,6 +20,8 @@ Environment:
 
 Notes:
   - This script verifies install + ability launch against an existing emulator/device.
+  - Before launch it wakes the device, extends the screen timeout, and switches to
+    performance mode to reduce lock-screen interference during debugging.
   - It also installs an HDC reverse port mapping `device tcp:19000 -> host tcp:19000`
     so the built-in OHOS WebDAV test config can reach the host test server via
     `http://127.0.0.1:19000/` inside the emulator.
@@ -174,6 +177,8 @@ main() {
   local ability_name="${ABILITY_NAME:-$DEFAULT_ABILITY_NAME}"
 
   echo "Using HDC target: $target"
+  [[ -f "$KEEP_AWAKE_SCRIPT" ]] || fail "Missing keep-awake script: $KEEP_AWAKE_SCRIPT"
+  HDC_TARGET="$target" bash "$KEEP_AWAKE_SCRIPT"
   echo "Installing HAP: $hap_path"
   install_hap "$target" "$hdc_bin" "$hap_path"
 

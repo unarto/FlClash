@@ -25,7 +25,15 @@ class CoreEventManager {
       for (final CoreEventListener listener in _listeners) {
         switch (event.type) {
           case CoreEventType.log:
-            listener.onLog(Log.fromJson(event.data));
+            final log = Log.fromJson(event.data);
+            final payload = log.payload;
+            if (payload.contains('[DNS]') ||
+                payload.contains('[TUN]') ||
+                payload.contains('[sing-tun]') ||
+                payload.contains('DNS server')) {
+              commonPrint.log('[OHOS-CORE-LOG] ${log.payload}');
+            }
+            listener.onLog(log);
             break;
           case CoreEventType.delay:
             listener.onDelay(Delay.fromJson(event.data));

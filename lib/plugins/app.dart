@@ -64,10 +64,22 @@ class App {
     });
   }
 
-  Future<int?> startBundledCoreProcess(String sourcePath, String socketPath) {
+  Future<int?> startBundledCoreProcess(
+    String sourcePath,
+    String socketPath,
+    String logDirPath,
+  ) {
     return methodChannel.invokeMethod<int>('startBundledCoreProcess', {
       'sourcePath': sourcePath,
       'socketPath': socketPath,
+      'logDirPath': logDirPath,
+    });
+  }
+
+  Future<int?> startEmbeddedCore(String socketPath, String logDirPath) {
+    return methodChannel.invokeMethod<int>('startEmbeddedCore', {
+      'socketPath': socketPath,
+      'logDirPath': logDirPath,
     });
   }
 
@@ -83,11 +95,15 @@ class App {
     required String stack,
     required bool ipv6,
     required bool allowBypass,
+    required String initParamsJson,
+    required String setupParamsJson,
   }) {
     return methodChannel.invokeMethod<bool>('startVpn', {
       'stack': stack,
       'ipv6': ipv6,
       'allowBypass': allowBypass,
+      'initParamsJson': initParamsJson,
+      'setupParamsJson': setupParamsJson,
     });
   }
 
@@ -97,6 +113,16 @@ class App {
 
   Future<bool?> getVpnRunning() {
     return methodChannel.invokeMethod<bool>('getVpnRunning');
+  }
+
+  Future<Map<String, dynamic>?> consumePendingDebugVpnStart() async {
+    final result = await methodChannel.invokeMethod<dynamic>(
+      'consumePendingDebugVpnStart',
+    );
+    if (result is Map) {
+      return Map<String, dynamic>.from(result);
+    }
+    return null;
   }
 
   Future<bool?> markExecutable(String path) {

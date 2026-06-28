@@ -23,11 +23,12 @@ import (
 	"github.com/metacubex/mihomo/tunnel/statistic"
 	"golang.org/x/exp/slices"
 	"net"
-	"regexp"
 	"os"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -489,15 +490,31 @@ func handleSuspend(suspended bool) bool {
 }
 
 func handleStartLog() {
+	debugCoreLog("handleStartLog begin subscriberNil=%t", logSubscriber == nil)
 	if logSubscriber != nil {
 		log.UnSubscribe(logSubscriber)
 		logSubscriber = nil
+		debugCoreLog("handleStartLog unsubscribed previous subscriber")
 	}
 	logSubscriber = log.Subscribe()
+	debugCoreLog("handleStartLog subscribed subscriberNil=%t", logSubscriber == nil)
 	go func() {
 		for logData := range logSubscriber {
 			if logData.LogLevel < log.Level() {
+				debugCoreLog(
+					"handleStartLog skip level=%s current=%s payload=%s",
+					logData.LogLevel.String(),
+					log.Level().String(),
+					logData.Payload,
+				)
 				continue
+			}
+			if logData.Payload != "" {
+				debugCoreLog(
+					"handleStartLog dispatch level=%s payload=%s",
+					logData.LogLevel.String(),
+					logData.Payload,
+				)
 			}
 			message := &Message{
 				Type: LogMessage,
@@ -505,6 +522,7 @@ func handleStartLog() {
 			}
 			sendMessage(*message)
 		}
+		debugCoreLog("handleStartLog subscriber loop exit")
 	}()
 }
 
@@ -543,6 +561,33 @@ func handleGetConfig(path string) (*config.RawConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	rulesHead := ""
+	huaweiRules := ""
+	if len(prof.Rule) > 0 {
+		head := prof.Rule
+		if len(head) > 12 {
+			head = head[:12]
+		}
+		rulesHead = strings.Join(head, " || ")
+		var matches []string
+		for _, rule := range prof.Rule {
+			if strings.Contains(rule, "httpdns.platform.dbankcloud.com") ||
+				strings.Contains(rule, "httpdns-browser.platform.dbankcloud.cn") ||
+				strings.Contains(rule, "browsercfg-drcn.cloud.dbankcloud.cn") {
+				matches = append(matches, rule)
+				if len(matches) >= 12 {
+					break
+				}
+			}
+		}
+		huaweiRules = strings.Join(matches, " || ")
+	}
+	debugCoreLog(
+		"handleGetConfig path=%s rulesHead=%s huaweiRules=%s",
+		path,
+		rulesHead,
+		huaweiRules,
+	)
 	return prof, nil
 }
 

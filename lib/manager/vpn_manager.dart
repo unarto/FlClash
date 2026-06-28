@@ -3,11 +3,13 @@ import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/action.dart';
+import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/state.dart';
 import 'package:fl_clash/state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
+import 'dart:convert';
 
 class VpnManager extends ConsumerStatefulWidget {
   final Widget child;
@@ -56,16 +58,38 @@ class _VpnContainerState extends ConsumerState<VpnManager> {
   Future<void> _syncVpn() async {
     final state = ref.read(vpnStateProvider);
     final isStart = ref.read(isStartProvider);
+    commonPrint.log(
+      '[OHOS-VPN] sync enter isStart=$isStart enable=${state.vpnProps.enable} '
+      'stack=${state.stack.name} ipv6=${state.vpnProps.ipv6} allowBypass=${state.vpnProps.allowBypass}',
+    );
     if (!isStart || !state.vpnProps.enable) {
+      final vpnRunning = await app?.getVpnRunning() ?? false;
+      if (vpnRunning) {
+        commonPrint.log(
+          '[OHOS-VPN] skip stop because native vpn is already running',
+          logLevel: LogLevel.warning,
+        );
+        return;
+      }
       await app?.stopVpn();
       return;
     }
     try {
+      final homeDir = await appPath.homeDirPath;
+      final setupParams = ref.read(setupActionProvider.notifier).setupParams;
+      final initParamsJson = json.encode({
+        'home-dir': homeDir,
+        'version': ref.read(versionProvider),
+      });
+      final setupParamsJson = json.encode(setupParams.toJson());
       final started = await app?.startVpn(
         stack: state.stack.name,
         ipv6: state.vpnProps.ipv6,
         allowBypass: state.vpnProps.allowBypass,
+        initParamsJson: initParamsJson,
+        setupParamsJson: setupParamsJson,
       );
+      commonPrint.log('[OHOS-VPN] startVpn returned started=$started');
       if (started == false) {
         throw PlatformException(
           code: 'START_VPN_FAILED',

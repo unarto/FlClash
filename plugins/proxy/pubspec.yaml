@@ -35,9 +35,6 @@ flutter:
   # adding or updating assets for this project.
   plugin:
     platforms:
-      ohos:
-        package: com.follow.clash.proxy
-        pluginClass: ProxyPlugin
       windows:
         pluginClass: ProxyPluginCApi
 

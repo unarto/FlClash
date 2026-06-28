@@ -221,6 +221,84 @@ PY
   rm -f "$local_json"
 }
 
+tap_node_attr() {
+  local target="$1"
+  local attr="$2"
+  local query="$3"
+  local repeat="${4:-1}"
+  local remote_json_name="ui_tap_node_layout.json"
+  local local_json
+  local_json=$(mktemp "${TMPDIR:-/tmp}/flclash-ui-layout.XXXXXX")
+  fetch_layout_json "$target" "$remote_json_name" "$local_json" ||
+    fail "Unable to read a valid layout json while locating ${attr}: $query"
+
+  local tap_target
+  tap_target=$(python3 - "$local_json" "$attr" "$query" <<'PY'
+import json
+import re
+import sys
+
+layout_path, attr_name, query = sys.argv[1:4]
+data = json.load(open(layout_path))
+query_cmp = query.casefold()
+best = None
+
+def parse_bounds(bounds):
+    match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
+    if not match:
+        return None
+    return tuple(map(int, match.groups()))
+
+def walk(node, depth=0):
+    global best
+    attrs = node.get("attributes", {})
+    value = (attrs.get(attr_name, "") or "").strip()
+    bounds = parse_bounds(attrs.get("bounds", ""))
+    clickable = attrs.get("clickable") == "true" or attrs.get("longClickable") == "true"
+    if value and value.casefold() == query_cmp and bounds is not None:
+        x1, y1, x2, y2 = bounds
+        area = (x2 - x1) * (y2 - y1)
+        score = (
+            0 if clickable else 1,
+            depth,
+            area,
+        )
+        if best is None or score < best[0]:
+            best = (score, (x1, y1, x2, y2))
+    for child in node.get("children", []):
+        walk(child, depth + 1)
+
+walk(data)
+if best is None:
+    sys.exit(1)
+
+x1, y1, x2, y2 = best[1]
+print(f"{x1} {y1} {x2} {y2}")
+PY
+  ) || fail "No matching node found for ${attr}: $query"
+
+  local x1 y1 x2 y2
+  read -r x1 y1 x2 y2 <<<"$tap_target"
+  local width=$((x2 - x1))
+  local height=$((y2 - y1))
+  local points=("$(((x1 + x2) / 2)) $(((y1 + y2) / 2))")
+  if [[ "$repeat" != "1" ]]; then
+    points+=(
+      "$((x1 + width * 3 / 4)) $(((y1 + y2) / 2))"
+      "$((x1 + width / 4)) $(((y1 + y2) / 2))"
+      "$(((x1 + x2) / 2)) $((y1 + height / 3))"
+    )
+  fi
+
+  local point x y
+  for point in "${points[@]}"; do
+    read -r x y <<<"$point"
+    run_hdc "$target" shell "uitest uiInput click $x $y"
+    sleep 0.2
+  done
+  rm -f "$local_json"
+}
+
 find_text() {
   local target="$1"
   local query="$2"
@@ -295,6 +373,8 @@ Usage:
   bash scripts/ohos/ui.sh text-at <x> <y> <text>
   bash scripts/ohos/ui.sh tap-text <text> [contains|exact]
   bash scripts/ohos/ui.sh tap-text-repeat <text> [contains|exact]
+  bash scripts/ohos/ui.sh tap-id <id>
+  bash scripts/ohos/ui.sh tap-key <key>
   bash scripts/ohos/ui.sh find-text <text> [contains|exact]
   bash scripts/ohos/ui.sh swipe <x1> <y1> <x2> <y2> [velocity]
   bash scripts/ohos/ui.sh key <Back|Home|Power|keyId>
@@ -343,6 +423,14 @@ main() {
     tap-text-repeat)
       [[ $# -eq 1 || $# -eq 2 ]] || fail "tap-text-repeat requires: text [contains|exact]"
       tap_text "$target" "$1" "${2:-contains}" "4"
+      ;;
+    tap-id)
+      [[ $# -eq 1 ]] || fail "tap-id requires: id"
+      tap_node_attr "$target" "id" "$1" "1"
+      ;;
+    tap-key)
+      [[ $# -eq 1 ]] || fail "tap-key requires: key"
+      tap_node_attr "$target" "key" "$1" "1"
       ;;
     find-text)
       [[ $# -eq 1 || $# -eq 2 ]] || fail "find-text requires: text [contains|exact]"

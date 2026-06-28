@@ -19,6 +19,318 @@ This repository now contains an `ohos/` host project and the minimum local plugi
 - Emulator validation now confirms the package no longer exits immediately after launch, and the OHOS core can execute `initClash`, `setupConfig`, `getProxies`, and `getExternalProviders`
 - Emulator validation also confirms the previous `flutter/navigation` `DartMessenger` runtime exception is no longer emitted after launch
 
+## Mate 80 Pro handoff status
+
+Latest real-device target:
+
+- HDC target: `5JV0225B14001088`
+- Device: Huawei Mate 80 Pro
+- System: `OpenHarmony-6.1.1.120`
+- HDC: `/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc`
+- OHOS Flutter: `/Users/liushangliang/.local/ohos-flutter-3.35.7/bin/flutter`
+- Current HAP: `ohos/entry/build/default/outputs/default/entry-default-signed.hap`
+
+Build command used for the current real-device debug package:
+
+```bash
+PATH=/Applications/DevEco-Studio.app/Contents/tools/ohpm/bin:/Applications/DevEco-Studio.app/Contents/tools/hvigor/bin:$PATH \
+  /Users/liushangliang/.local/ohos-flutter-3.35.7/bin/flutter build hap --debug --target-platform ohos-arm64 --no-pub
+```
+
+Keep the phone awake during real-device testing:
+
+```bash
+/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc -t 5JV0225B14001088 shell "power-shell wakeup"
+/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc -t 5JV0225B14001088 shell "power-shell timeout -o 1800000"
+```
+
+Restore the normal screen timeout after testing:
+
+```bash
+/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc -t 5JV0225B14001088 shell "power-shell timeout -r"
+```
+
+Do not restart emulator testing for this path. DevEco Studio has previously used around 60% CPU while the phone was
+connected, so monitor local load before long builds:
+
+```bash
+ps -axo pid,pcpu,pmem,comm | egrep 'qemu|emulator|DevEco|hdc|node|java|hvigor|flutter|dart' | egrep -v 'egrep' | sort -k2 -nr | head -20
+```
+
+Real-device fixes already verified on Mate 80 Pro:
+
+- `dab118a fix(ohos): run core invocations off the main thread`
+  - Moves OHOS core calls off the main thread through NAPI async work.
+- `2ddf912 fix(ohos): restore delay test pending indicator`
+  - Restores the per-proxy-card pending indicator during delay tests.
+  - The bottom-right `延迟测速` floating button disappearing during an active test is the expected previous behavior.
+- A 37-node delay test completed without `THREAD_BLOCK`, `BlockMonitor`, `CPP_CRASH`, `SIGSEGV`, or `SIGABRT`.
+
+Current unresolved VPN finding:
+
+- The VPN runtime itself is now proven to work. On Mate 80 Pro, `vpn-tun` comes up at `172.19.0.1/24`,
+  `StartTun result ok=1` is logged, and Huawei Browser traffic can drive `vpn-tun` RX/TX counters upward.
+- The remaining gap is specific to non-browser Web container apps such as `com.easy.hmos.abroad`.
+  In the current repro chain, that app still reports `vpnEnabled:1` together with
+  `dnsServerReturnNothing`, `dnsFromNetsys:0`, and `sock:-1`.
+- OpenHarmony source inspection now shows two important platform constraints:
+  - Public app APIs only expose process-local `setAppNet()`.
+  - The UID-level VNIC / socket-rebind path (`EnableVnicNetwork`, `CloseSocketsUid`) is guarded by
+    `ohos.permission.CONNECTIVITY_INTERNAL`, which is a system-only permission.
+- OpenHarmony `web_webview` source adds another strong framework-side clue:
+  - `VpnListener::OnAvailable()` only signals availability and does not carry a VPN `netId`.
+  - `GetDnsServersForVpn()` exists in the adapter layer, but in the visible open-source tree it only
+    appears in declarations, bridge wrappers, and unit tests. No direct production call site was found.
+  - Live device logs still show the target app entering the normal default-net callback path first:
+    `NetConnCallback enter, net available, net id = 113`, then
+    `network_for_dns_ -1`, `dns server is empty`, and
+    `BindDnsToNetwork, network_for_dns -1`.
+- A fresh Huawei Browser control run on June 26, 2026 tightened the contrast further:
+  - Launching `com.huawei.hmos.browser/MainAbility` and opening `https://www.youtube.com` increased
+    `vpn-tun` counters from `RX/TX 1004/1580` packets to `2149/2842`, confirming real traffic crossed
+    the FlClash VPN.
+  - The same time window showed Huawei Browser-specific ArkWeb plumbing absent from the failing app:
+    `AwcExtensionAbility`, `AwcServiceExtAbility`, `HWBR-0-arkweb_mainprocess`, `NK_CPP`, and
+    `RequestFromHttpDns ... bundleName=com.huawei.hmos.browser`.
+  - This strengthens the current theory that Huawei Browser is not using the plain generic
+    WebAdapter/ArkWeb app path. It carries extra browser-side network glue, including its own
+    Cronet/HTTPDNS machinery, while `com.easy.hmos.abroad` remains stuck on the default-net callback
+    path with `network_for_dns=-1`.
+- A focused single-variable experiment was re-run on June 26, 2026 by removing `isInternal: true`
+  from `FlClashVpnAbility.ets`, rebuilding, reinstalling, and cold-starting the target app.
+  It still failed with the same WebAdapter symptoms:
+  - `NetConnCallback enter, net available, net id = 113`
+  - `network_for_dns_ -1`
+  - `dns server is empty`
+  - `BindDnsToNetwork, network_for_dns -1`
+  - `vpnEnabled:1` + `dnsServerReturnNothing`
+- A second single-variable experiment was re-run on June 26, 2026 by temporarily setting
+  `trustedApplications: ['com.easy.hmos.abroad']`, rebuilding, reinstalling, and cold-starting
+  the target app.
+  - System VPN manager accepted the target UID:
+    `app: com.easy.hmos.abroad success, uid=20020274.`
+  - The VPN became non-global in the expected way:
+    `IsGlobalVpn: refused = 0 accepted = 1 routed = 1`
+  - `vpn-tun` still came up normally and `StartTun result ok=1` still held.
+  - Despite the UID-level trustlist taking effect, the target app still reported:
+    `vpnEnabled:1`, `dnsFromNetsys:0`, `sock:-1`,
+    `dnsServerReturnNothing` / `Couldn't resolve host name`,
+    `tryConnV4:0`, and `tryConnV6:0`.
+  - This is a stronger version of the earlier trustlist finding: the app is not merely
+    missing VPN eligibility. It still fails after the system has explicitly mapped that UID
+    into VPN routing state, which points back to the app/Web container resolver path itself.
+- A runtime mission dump on June 26, 2026 also clarified the "Chrome vs Huawei Browser" split:
+  - `aa dump -a` showed a background mission
+    `#com.android.chrome:entry:com.google.android.apps.chrome.Main`
+    hosted under `app name [com.huawei.shell_assistant]` and
+    `bundle name [com.huawei.shell_assistant]`.
+  - The same dump also showed
+    `#com.easy.abroad:entry:com.easy.abroad.activities.MainActivity`
+    hosted under the same `com.huawei.shell_assistant` wrapper.
+  - By contrast, Huawei Browser appears as its own native mission:
+    `#com.huawei.hmos.browser:entry:MainAbility`.
+  - This means the user-visible "non-native app" bucket is at least two different runtime classes:
+    1. native Harmony browser/AWC path (`com.huawei.hmos.browser`)
+    2. `com.huawei.shell_assistant`-hosted compatibility missions such as Chrome and `com.easy.abroad`
+  - That split fits the observed behavior: Huawei Browser traffic reaches `vpn-tun`, while the
+    shell-assistant-hosted path remains the unresolved gap.
+- A third single-variable experiment was re-run on June 26, 2026 by temporarily setting
+  `trustedApplications: ['com.huawei.shell_assistant']`, rebuilding, reinstalling, and cold-starting
+  `com.easy.hmos.abroad`.
+  - System VPN manager then accepted the host wrapper UID instead of the visible compat-app UID:
+    `app: com.huawei.shell_assistant success, uid=20005.`
+  - `vpn-tun` counters increased during the target app launch from `RX/TX 6/6` packets to `52/57`,
+    which is the first direct counter evidence that shell-assistant-hosted compat traffic can enter
+    the FlClash TUN path.
+  - The same run also produced successful app-side HTTP completion:
+    `statusCode: 200` / `request responseCode=200`.
+  - This does not fully eliminate the resolver inconsistency yet, because adjacent logs still show
+    retries with `dnsServerReturnNothing` and `dnsFromNetsys:0`.
+  - Even with that caveat, this is now the strongest runtime lead: for compat apps such as Chrome
+    and `com.easy.abroad`, the real routing/trust target appears to be the shell assistant host UID
+    rather than the user-visible package UID.
+- Follow-up compat verification was then scripted into `bash scripts/ohos/verify_compat_vpn.sh`
+  so the same chain can be replayed without hand-written command bundles.
+  - On June 26, 2026, a delayed sample run against `com.easy.hmos.abroad` showed
+    `vpn-tun` counters moving from `RX/TX 6/6` to `11/11`, then `12/12`, while the app again logged
+    `request responseCode=200`.
+  - This is stronger than the earlier one-shot check because it proves the compat app can now
+    trigger bidirectional TUN counter growth on demand, even though the observed volume is still small
+    compared with the native Huawei Browser control run.
+  - A later fresh run on the same day also showed that this compat path is timing-sensitive:
+    with shorter waits the app could first report `weakNetTcpTimeout` before its later retry succeeded.
+    The script defaults were therefore widened to the currently verified working window:
+    `VPN_START_WAIT=15`, `TARGET_LAUNCH_WAIT=20`, and `TARGET_SETTLE_WAIT=15`.
+  - After writing those waits back into the script and re-running the default command,
+    the compat verification again succeeded on the unmodified command line:
+    `vpn-tun` moved from `RX/TX 8/8` to `8/24`, then `11/47`, and
+    `request responseCode=200` was logged again.
+- A fourth single-variable iteration was then re-run on June 26, 2026 by widening the trustlist to
+  both `com.huawei.shell_assistant` and `com.huawei.hmos.browser`.
+  - This removed the regression introduced by the shell-assistant-only trustlist.
+  - The scripted compat run still passed after reinstall:
+    `vpn-tun` moved from `RX/TX 14/14` to `19/19`, then `20/20`, and
+    `com.easy.hmos.abroad` again logged `request responseCode=200` with `dnsFromNetsys:1`.
+- A matching native browser regression check was then scripted into
+  `bash scripts/ohos/verify_browser_vpn.sh`.
+- Under the widened trustlist, Huawei Browser again drove substantial tunnel traffic:
+  `vpn-tun` moved from `RX/TX 4/4` to `129/154`, then `188/224`, while browser-side logs again
+  showed the expected ArkWeb / Cronet path such as `RequestFromHttpDns ... bundleName=com.huawei.hmos.browser`.
+- The Chrome compat path is now also scripted through
+  `bash scripts/ohos/verify_chrome_vpn.sh`.
+  - The script keeps the device awake, returns to the desktop, resolves the Chrome dock icon from
+    the live layout dump, launches Chrome, taps the restored `m.youtube.com` / `YouTube` target
+    when present, and records `vpn-tun` counters plus `com.android.chrome` /
+    `com.huawei.shell_assistant` mission and hilog evidence.
+  - On June 26, 2026, a full run on Mate 80 Pro showed:
+    `vpn-tun` moved from `RX/TX 5/5` after VPN start to `43/84` after Chrome launch,
+    then `60/156`, then `74/215` after Chrome interaction and settle.
+  - The same run also confirmed the foreground window as `com.android.chrome` and the compat host
+    path as `com.huawei.shell_assistant`, which closes the earlier verification gap for Chrome itself.
+- This is the first verified source state in which the native Huawei Browser path and the
+  shell-assistant-hosted compat path both traverse the FlClash VPN on the same device build.
+- This means the current strongest root-cause statement is no longer "route setup is wrong".
+  It is now: FlClash successfully creates a usable HarmonyOS VPN network, but generic WebAdapter/ArkWeb
+  clients only partially adopt that VPN network for DNS/socket binding even when VPN availability is observed.
+
+### RESOLVED (June 27, 2026): browsers load YouTube — the TUN→proxy TCP path was dead (gVisor stack fix)
+
+This is THE fix that finally made both the Huawei native browser and Chrome render YouTube (and any
+foreign site) through the VPN on the Mate 80 Pro. The DNS/fake-ip work below was necessary but not
+sufficient.
+
+Symptom: every TCP connection through the tun timed out (even a raw IP like `1.1.1.1`), while a loopback
+`curl -x http://127.0.0.1:7890 …` to the same node worked perfectly. A temporary core diagnostic
+(dumping `statistic.DefaultManager.Snapshot()` + mihomo `log.Subscribe()` to the `debugCoreLog` file at
+`/data/storage/el2/base/files/flclash-core.log`, read from the host via the world-readable real path
+`/data/app/el2/100/base/com.follow.clash/files/flclash-core.log`) showed `count=0` tracked connections
+and `[sing-tun] Mixed.processPacket proto=6 …` lines with **no** follow-up — TCP SYNs entered the tun but
+never produced a connection. UDP/DNS worked.
+
+Root cause: mihomo's default `mixed` TUN stack dispatches **UDP via gVisor** (`InjectInbound`) but **TCP
+via the System NAT** (`third_party/sing-tun/stack_system.go processIPv4TCP`), which rewrites each SYN to
+`tunAddr:tcpPort` and writes it back, relying on the **kernel to loop that packet to a local TCP
+listener**. That loopback does not happen inside the OHOS VpnExtension, so all TCP was silently dropped.
+
+Fix (both parts required):
+
+1. `core/tun/tun.go` — force `tunStack = constant.TunGvisor` when `tunBuildGOOS == "ohos"`, so TCP is also
+   handled entirely in userspace (no kernel loopback).
+2. gVisor's `fdbased.New()` calls `isSocketFD(fd) → unix.Fstat(fd)`, which OHOS denies on the VPN tun fd
+   (`permission denied`), so the gVisor stack failed to start. `scripts/ohos/patch_gvisor_tun_fd.sh`
+   patches `isSocketFD` to treat an Fstat failure as non-socket (readv dispatch); it is run idempotently
+   by `GoBuilder._patchOhosGvisorTunFd` (`plugins/setup/buildkit/build_tool/lib/src/go_builder.dart`)
+   before every OHOS lib build, because gVisor is a non-replaced module-cache dependency.
+
+Verified device-side: both browsers fully render the YouTube homepage (logo, thumbnails, player); the live
+connection table shows 17+ connections routed through the HK node; `vpn-tun` RX climbs into the MBs.
+
+The OHOS sniffer force-enable and the `core/conn_dump_ohos.go` diagnostic added while hunting this were
+removed afterward (`core/sniffer_ohos.go`, `core/sniffer_default.go`, and the `ensureOhosSniffer` call in
+`core/common.go` are gone); the gVisor TCP fix + the fake-ip/DNS changes below are what carry the result.
+
+### RESOLVED (June 27, 2026): YouTube blocked by `youtube.com` in the OHOS fake-ip-filter
+
+Root cause for browsers not loading YouTube on Mate 80 Pro was found and fixed:
+
+- `lib/common/task.dart` `_ohosHuaweiFakeIpFilterDomains` listed `youtube.com`, `*.youtube.com`,
+  `www.youtube.com`, `m.youtube.com`. The fake-ip-filter forces those domains OUT of fake-ip into
+  REAL DNS resolution. On the China carrier network that is the GFW-poisoned path: the core resolved
+  YouTube via China nameservers (`114.114.114.114` / `223.5.5.5` / `119.29.29.29`) in `dnsMode:normal`,
+  the browser got a poisoned IP (e.g. a Facebook IP `31.13.92.37`) or nothing, and the page stayed blank.
+- Fix: remove the YouTube entries so YouTube gets a fake-ip and routes through the proxy by domain.
+  The Huawei `dbankcloud` HTTPDNS entries correctly remain in that list (they need real IPs to bypass).
+- After the fix, the Huawei Browser actually loaded `youtube.com` through the proxy: `vpn-tun` carried
+  real asymmetric traffic (RX/TX ~783/786, 56 KB) and the page progressed from the hard
+  `网络连接不稳定` error to a live loading state. This is the first time a poisoned foreign domain
+  resolved correctly inside an OHOS browser under FlClash.
+
+Supporting changes made in the same investigation:
+
+- `ohos/entry/src/main/ets/vpn/vpn_config.ts`: added `HUAWEI_HTTPDNS_EXCLUDED_CIDRS`
+  (`125.88.252.0/24`, `49.4.0.0/16`, `121.36.0.0/16`) as excluded VPN routes. Huawei Browser resolves
+  hosts via its own HTTPDNS to those China edge servers; when routed into the tunnel they are reached
+  through the foreign node and never answer, stalling each lookup ~10s (`code:10069004`). Excluding them
+  keeps HTTPDNS on the local carrier network. After this change the browser reported `useHttpDns:0` and
+  stopped stalling.
+- `core/sniffer_ohos.go` (+ `core/sniffer_default.go` no-op, called from `core/common.go applyConfig`):
+  force-enable TLS/HTTP/QUIC sniffing with `override-destination` + `parse-pure-ip` + `force-dns-mapping`
+  on OHOS, as defense-in-depth for the documented OHOS DNS-hijack gap (system resolver does DNS on the
+  underlying carrier interface, bypassing the tun, so poisoned IPs can still reach the core).
+- `isInternal=false` was tried and reverted: it did not fix DNS propagation (NetConnManager never
+  registered a VPN network either way) and the proxy `egress`/outbound was more stable with the original
+  `isInternal=true`.
+
+Diagnostic facts captured (Mate 80 Pro `5JV0225B14001088`):
+
+- Core + node proven working independently: `curl -x http://127.0.0.1:7890 https://www.youtube.com/generate_204`
+  via `hdc fport tcp:17890 tcp:7890` returned HTTP 204 (US egress). NOTE: that path tests the loopback
+  listener, not the tun.
+- `hidumper -s NetConnManager` shows only the cellular net (NetId 113); the VPN never registers as a
+  NetConn supplier on this OHOS image, regardless of `isInternal`. This is why the VPN DNS (`172.19.0.2`)
+  is not propagated to apps and `dns-hijack` cannot catch the system resolver's queries.
+
+Outstanding (environmental, not a code defect): during heavy testing the jisu airport node became
+unreachable (`DIRECT` to a China IP returns 404 through the proxy, but every foreign endpoint times out
+`http=000`, and the dashboard `网络检测` falls back to a China egress with a persistent `连接中…` state).
+Subscription is healthy (3.6 GB / 2.9 TB, valid to 2028-02-04) and a profile sync did not restore it, so
+this is a node-server / source-IP-block issue. A working node is required to re-confirm the full
+end-to-end YouTube render and to validate Chrome (`com.android.chrome` via `com.huawei.shell_assistant`).
+
+Focused log artifact for the failed `isInternal=false` experiment:
+
+```text
+.ohos_live/isinternal_false_experiment.log
+```
+
+Focused control-run artifact for Huawei Browser:
+
+```text
+.ohos_live/huawei_browser_youtube_20260626_123020.log
+```
+
+Focused trustlist/UID-DNS experiment artifact:
+
+```text
+.ohos_live/trusted_app_uid_dns_20260626_123925.log
+```
+
+Focused runtime mission dump for shell-assistant-hosted apps:
+
+```text
+.ohos_live/mission_dump_shell_assistant_20260626_124304.log
+```
+
+Focused shell-assistant trust / counter artifact:
+
+```text
+.ohos_live/shell_assistant_counter_20260626_124738.log
+```
+
+Focused scripted compat verification artifacts:
+
+```text
+.ohos_live/compat_vpn_20260626_125637.log
+.ohos_live/compat_vpn_20260626_125752.log
+.ohos_live/compat_vpn_20260626_130155.log
+.ohos_live/compat_vpn_20260626_130753.log
+```
+
+Focused dual-trust browser verification artifact:
+
+```text
+.ohos_live/native_browser_under_dual_trust_20260626_130902.log
+.ohos_live/browser_vpn_20260626_131124.log
+```
+
+Useful live probes while continuing this investigation:
+
+```bash
+/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc -t 5JV0225B14001088 shell "ifconfig vpn-tun 2>/dev/null || true; ip route 2>/dev/null || netstat -rn 2>/dev/null || true"
+bash scripts/ohos/verify_compat_vpn.sh
+bash scripts/ohos/verify_browser_vpn.sh
+```
+
 ## What is missing
 
 The current branch is no longer blocked at core load, but it is not feature-complete yet:

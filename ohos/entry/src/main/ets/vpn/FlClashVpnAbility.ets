@@ -3,8 +3,16 @@ import Want from '@ohos.app.ability.Want';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import connection from '@ohos.net.connection';
 import vpnExtension from '@ohos.net.vpnExtension';
+import {
+  buildOhosVpnRoutes,
+  resolveOhosVpnApplicationLists,
+} from './vpn_config';
 
 interface NativeBridge {
+  quickSetup(initParamsJson: string, setupParamsJson: string): string;
+  consumeCoreEvents(): string;
+  consumeProtectRequests(): string;
+  completeProtectRequest(requestId: number, result: number): boolean;
   startTun(fd: number, stack: string, address: string, dns: string): boolean;
   stopTun(): boolean;
   lastError(): string;
@@ -22,6 +30,12 @@ const IPV4_FAMILY = 1;
 const IPV6_FAMILY = 2;
 const BUNDLE_NAME = 'com.follow.clash';
 const VPN_STATUS_FILE_NAME = 'flclash-vpn-status.txt';
+const PROTECT_POLL_INTERVAL_MS = 10;
+
+interface ProtectRequest {
+  id: number;
+  fd: number;
+}
 
 function writeVpnStatus(filesDir: string, status: string): void {
   const path = `${filesDir}/${VPN_STATUS_FILE_NAME}`;
@@ -58,13 +72,39 @@ function getBooleanParam(
 
 export default class FlClashVpnAbility extends VpnExtensionAbility {
   private vpnConnection: vpnExtension.VpnConnection | null = null;
+  private protectLoopToken = 0;
+
+  private async pumpProtectRequests(loopToken: number): Promise<void> {
+    while (this.vpnConnection !== null && this.protectLoopToken === loopToken) {
+      // The VPN extension hosts its own bridge instance, so unsolicited core
+      // events would otherwise accumulate in this process without a consumer.
+      nativeBridge.consumeCoreEvents();
+      const payload = nativeBridge.consumeProtectRequests();
+      const requests = JSON.parse(payload) as Array<ProtectRequest>;
+      for (const request of requests) {
+        try {
+          await this.vpnConnection.protect(request.fd);
+          nativeBridge.completeProtectRequest(request.id, 0);
+        } catch (error) {
+          console.warn(
+            `[FlClashVpnAbility] protect fd=${request.fd} failed: ${JSON.stringify(error)}`,
+          );
+          nativeBridge.completeProtectRequest(request.id, -1);
+        }
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, PROTECT_POLL_INTERVAL_MS));
+    }
+  }
 
   async onCreate(want: Want): Promise<void> {
     this.vpnConnection = vpnExtension.createVpnConnection(this.context);
+    const protectLoopToken = ++this.protectLoopToken;
     writeVpnStatus(this.context.filesDir, 'starting');
     const stack = getStringParam(want, 'stack', 'mixed');
     const ipv6 = getBooleanParam(want, 'ipv6', false);
     const allowBypass = getBooleanParam(want, 'allowBypass', true);
+    const initParamsJson = getStringParam(want, 'initParamsJson', '');
+    const setupParamsJson = getStringParam(want, 'setupParamsJson', '');
 
     const addresses: Array<connection.LinkAddress> = [
       {
@@ -79,34 +119,25 @@ export default class FlClashVpnAbility extends VpnExtensionAbility {
       });
     }
 
-    const routes: Array<connection.RouteInfo> = [
-      {
-        interface: '',
-        destination: {
-          address: { address: '0.0.0.0', family: IPV4_FAMILY },
-          prefixLength: 0,
-        },
-        gateway: { address: '', family: IPV4_FAMILY },
-        hasGateway: false,
-        isDefaultRoute: true,
-      },
-    ];
-    if (ipv6) {
-      routes.push({
-        interface: '',
-        destination: {
-          address: { address: '::', family: IPV6_FAMILY },
-          prefixLength: 0,
-        },
-        gateway: { address: '', family: IPV6_FAMILY },
-        hasGateway: false,
-        isDefaultRoute: true,
-      });
-    }
+    const routes: Array<connection.RouteInfo> = buildOhosVpnRoutes(ipv6);
 
     const dnsAddresses = ipv6 ? [DNS4, DNS6] : [DNS4];
+    const tunAddresses = ipv6
+      ? `${IPV4_ADDRESS},${IPV6_ADDRESS}`
+      : IPV4_ADDRESS;
+    const vpnApplicationLists = resolveOhosVpnApplicationLists(BUNDLE_NAME);
 
     try {
+      if (initParamsJson.length === 0 || setupParamsJson.length === 0) {
+        throw new Error('missing init/setup params for quickSetup');
+      }
+      const setupResult = nativeBridge.quickSetup(
+        initParamsJson,
+        setupParamsJson,
+      );
+      if (setupResult.length > 0) {
+        throw new Error(`quickSetup failed: ${setupResult}`);
+      }
       const fd = await this.vpnConnection.create({
         addresses,
         routes,
@@ -114,8 +145,10 @@ export default class FlClashVpnAbility extends VpnExtensionAbility {
         mtu: 9000,
         isIPv4Accepted: true,
         isIPv6Accepted: ipv6,
+        isInternal: false,
         isBlocking: false,
-        blockedApplications: [BUNDLE_NAME],
+        trustedApplications: vpnApplicationLists.trustedApplications,
+        blockedApplications: vpnApplicationLists.blockedApplications,
       });
       try {
         await this.vpnConnection.protectProcessNet();
@@ -124,10 +157,11 @@ export default class FlClashVpnAbility extends VpnExtensionAbility {
           `[FlClashVpnAbility] protectProcessNet failed: ${JSON.stringify(error)}`,
         );
       }
+      void this.pumpProtectRequests(protectLoopToken);
       const started = nativeBridge.startTun(
         fd,
         stack,
-        IPV4_ADDRESS,
+        tunAddresses,
         dnsAddresses.join(','),
       );
       if (!started) {
@@ -170,5 +204,6 @@ export default class FlClashVpnAbility extends VpnExtensionAbility {
       );
     }
     this.vpnConnection = null;
+    this.protectLoopToken += 1;
   }
 }

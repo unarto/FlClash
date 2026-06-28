@@ -35,6 +35,26 @@ function getWorkspaceNodeModules() {
   );
 }
 
+function ensureDirSync(dirPath) {
+  if (!dirPath || dirPath === '.' || fs.existsSync(dirPath)) {
+    return;
+  }
+  ensureDirSync(path.dirname(dirPath));
+  try {
+    fs.mkdirSync(dirPath);
+  } catch (error) {
+    if (!fs.existsSync(dirPath)) {
+      throw error;
+    }
+  }
+}
+
+function removeDirectoryContentsSync(dirPath) {
+  for (const entry of fs.readdirSync(dirPath)) {
+    removePathSync(path.join(dirPath, entry));
+  }
+}
+
 function getBundledHvigorVersion() {
   const hvigorBinDir = getHvigorToolRoot();
   const toolRoot = path.dirname(hvigorBinDir);
@@ -60,12 +80,12 @@ function unescapePropertyValue(value) {
 }
 
 function getFlutterSdkRoot() {
+  const envFlutterSdk = process.env.FLUTTER_ROOT || process.env.FLUTTER_SDK || '';
+  if (envFlutterSdk) {
+    return envFlutterSdk;
+  }
   const localPropertiesPath = path.join(__dirname, '..', 'local.properties');
   if (!fs.existsSync(localPropertiesPath)) {
-    const flutterSdk = process.env.FLUTTER_ROOT || process.env.FLUTTER_SDK || '';
-    if (flutterSdk) {
-      return flutterSdk;
-    }
     throw new Error(`Missing local.properties: ${localPropertiesPath}`);
   }
 
@@ -84,10 +104,6 @@ function getFlutterSdkRoot() {
     }
   }
 
-  const flutterSdk = process.env.FLUTTER_ROOT || process.env.FLUTTER_SDK || '';
-  if (flutterSdk) {
-    return flutterSdk;
-  }
   throw new Error(`Missing flutter.sdk in ${localPropertiesPath}`);
 }
 
@@ -142,7 +158,8 @@ function removePathSync(targetPath) {
   }
   const stat = fs.lstatSync(targetPath);
   if (stat.isDirectory() && !stat.isSymbolicLink()) {
-    fs.rmSync(targetPath, {recursive: true, force: true});
+    removeDirectoryContentsSync(targetPath);
+    fs.rmdirSync(targetPath);
     return;
   }
   fs.rmSync(targetPath, {force: true});
@@ -150,7 +167,7 @@ function removePathSync(targetPath) {
 
 function ensureSymlink(targetPath, linkPath) {
   const parentDir = path.dirname(linkPath);
-  fs.mkdirSync(parentDir, {recursive: true});
+  ensureDirSync(parentDir);
   if (fs.existsSync(linkPath) || fs.lstatSync(parentDir).isDirectory()) {
     try {
       const currentTarget = fs.readlinkSync(linkPath);
@@ -215,8 +232,6 @@ function loadFlutterHvigorPlugin() {
         return {
           ...plugin,
           apply(rootNode) {
-            const appContext = rootNode.getContext(loadPlugin().OhosPluginId.OHOS_APP_PLUGIN);
-            ensureProjectFlutterOverrides(appContext);
             return plugin.apply(rootNode);
           },
         };
@@ -250,7 +265,7 @@ function ensureFlutterHar(moduleDir) {
     throw new Error(`Missing Flutter HAR: ${sourceHarPath}`);
   }
 
-  fs.mkdirSync(targetHarDir, {recursive: true});
+  ensureDirSync(targetHarDir);
 
   const sourceStat = fs.statSync(sourceHarPath);
   const targetExists = fs.existsSync(targetHarPath);
@@ -275,7 +290,7 @@ function prepareNativePluginModule(moduleDir) {
       removePathSync(moduleOhModulesDir);
     }
   }
-  fs.mkdirSync(moduleOhModulesDir, {recursive: true});
+  ensureDirSync(moduleOhModulesDir);
 
   const flutterHarPath = ensureFlutterHar(moduleDir);
   const ohPackagePath = path.join(moduleDir, 'oh-package.json5');

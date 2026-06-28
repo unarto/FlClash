@@ -64,6 +64,13 @@
         }
       },
       {
+        "name": "ohos.permission.GET_NETWORK_INFO",
+        "reason": "$string:internet_permission_reason",
+        "usedScene": {
+          "when": "always"
+        }
+      },
+      {
         "name": "ohos.permission.FILE_ACCESS_PERSIST",
         "reason": "$string:file_access_persist_permission_reason",
         "usedScene": {

@@ -80,6 +80,13 @@ class GoBuilder {
     return ldflags.join(' ');
   }
 
+  String _tagsForTarget(Target target) {
+    if (target.platformDir == 'ohos') {
+      return '${config.tags},ohos';
+    }
+    return config.tags;
+  }
+
   Future<String> build(Target target) async {
     // Desktop: output directly to libclash/{platform}/
     // Android: output to libclash/android/{abi}/
@@ -115,11 +122,15 @@ class GoBuilder {
     final args = [
       'build',
       '-ldflags=$ldflags',
-      '-tags=${config.tags}',
+      '-tags=${_tagsForTarget(target)}',
       if (target.isLib) '-buildmode=c-shared',
       '-o',
       outFile,
     ];
+
+    if (target.platformDir == 'ohos' && target.isLib) {
+      await _patchOhosGvisorTunFd(goExecutable);
+    }
 
     _log.info(kDoubleSeparator);
     _log.info(
@@ -151,6 +162,22 @@ class GoBuilder {
     return outFile;
   }
 
+  /// Patches the metacubex/gvisor fdbased endpoint in the module cache so the
+  /// gVisor TUN stack can start inside the OHOS VpnExtension sandbox, where the
+  /// VPN tun fd cannot be Fstat'd. Without this the gVisor stack fails to start
+  /// and ALL TCP through the tunnel silently breaks. Idempotent.
+  Future<void> _patchOhosGvisorTunFd(String goExecutable) async {
+    final script =
+        p.join(rootDir, 'scripts', 'ohos', 'patch_gvisor_tun_fd.sh');
+    if (!File(script).existsSync()) {
+      _log.warning('gvisor tun-fd patch script missing: $script');
+      return;
+    }
+    _log.info('Patching gvisor fdbased endpoint for OHOS tun fd');
+    await runCommandStream('bash', [script, goExecutable],
+        workingDirectory: rootDir);
+  }
+
   Future<void> _buildOhosStaticArchive({
     required Target target,
     required Map<String, String> env,
@@ -169,7 +196,7 @@ class GoBuilder {
     final args = [
       'build',
       '-ldflags=${_ldflagsForTarget(target, config.libName)}',
-      '-tags=${config.tags}',
+      '-tags=${_tagsForTarget(target)}',
       '-buildmode=c-archive',
       '-o',
       tempArchivePath,

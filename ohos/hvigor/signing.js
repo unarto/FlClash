@@ -12,12 +12,22 @@ const PROFILE_RELEASE_ALIAS = 'openharmony application profile release';
 const DEFAULT_STORE_PASSWORD = '123456';
 const DEFAULT_SIGN_ALG = 'SHA256withECDSA';
 
-function execJava(signToolPath, args) {
-  return execFile('java', ['-jar', signToolPath, ...args]);
+function ensureDir(dirPath) {
+  if (!dirPath || dirPath === '.' || fs.existsSync(dirPath)) {
+    return;
+  }
+  ensureDir(path.dirname(dirPath));
+  try {
+    fs.mkdirSync(dirPath);
+  } catch (error) {
+    if (!fs.existsSync(dirPath)) {
+      throw error;
+    }
+  }
 }
 
-function ensureDir(dirPath) {
-  fs.mkdirSync(dirPath, {recursive: true});
+function execJava(signToolPath, args) {
+  return execFile('java', ['-jar', signToolPath, ...args]);
 }
 
 function exportCertificate(keystorePath, alias, outputPath, asPem = false) {

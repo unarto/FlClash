@@ -1,7 +1,9 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <spawn.h>
 #include <sys/mman.h>
+#include <arpa/inet.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <chrono>
@@ -9,8 +11,11 @@
 #include <cstring>
 #include <condition_variable>
 #include <cctype>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <netinet/in.h>
+#include <poll.h>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -26,8 +31,14 @@ namespace {
 using InvokeActionFn = void (*)(void *, const char *);
 using FreeCStringFn = void (*)(char *);
 using SetEventListenerFn = void (*)(void *);
+using QuickSetupFn = void (*)(void *, char *, char *);
 using StartTunFn = bool (*)(void *, int, char *, char *, char *);
 using StopTunFn = void (*)();
+using StartServerProcessFn = void (*)(char *, char *);
+using StartServerProcessDetachedFn = void (*)(char *, char *);
+using ProtectBridgeFn = void (*)(void *, int);
+using ResolveProcessBridgeFn =
+    char *(*)(void *, int, const char *, const char *, int);
 
 constexpr auto kInvokeTimeout = std::chrono::seconds(15);
 constexpr char kEntryLibraryDebugLogPath[] =
@@ -41,9 +52,12 @@ void *g_core_handle = nullptr;
 InvokeActionFn g_invoke_action = nullptr;
 FreeCStringFn g_free_c_string = nullptr;
 SetEventListenerFn g_set_event_listener = nullptr;
+QuickSetupFn g_quick_setup = nullptr;
 StartTunFn g_start_tun = nullptr;
 StopTunFn g_stop_tun = nullptr;
 bool g_event_listener_registered = false;
+bool g_embedded_core_started = false;
+std::thread g_embedded_core_thread;
 std::mutex g_state_mutex;
 std::vector<std::string> g_event_payloads;
 
@@ -54,10 +68,35 @@ struct PendingResult {
   std::string payload;
 };
 
+struct QuickSetupResult {
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool completed = false;
+  std::string payload;
+};
+
+struct ProtectRequest {
+  int32_t id = 0;
+  int32_t fd = -1;
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool completed = false;
+  int32_t result = -1;
+};
+
 void ResultCallback(const char *data);
+void QuickSetupCallback(const char *data);
+QuickSetupResult *g_quick_setup_result = nullptr;
 
 std::unordered_map<std::string, std::shared_ptr<PendingResult>> g_pending_results;
 std::unordered_set<std::string> g_detached_ids;
+ProtectBridgeFn *g_protect_bridge = nullptr;
+ResolveProcessBridgeFn *g_resolve_process_bridge = nullptr;
+char g_tun_callback_token = 0;
+std::mutex g_protect_requests_mutex;
+std::unordered_map<int32_t, std::shared_ptr<ProtectRequest>> g_protect_requests;
+std::vector<int32_t> g_pending_protect_request_ids;
+int32_t g_next_protect_request_id = 1;
 std::mutex g_probe_mutex;
 std::condition_variable g_probe_condition;
 bool g_probe_completed = false;
@@ -127,6 +166,56 @@ void AppendEarlyDebugLog(const std::string &message) {
   std::fflush(stderr);
 }
 
+void ProtectSocketFromVpn(void *, int fd) {
+  if (fd < 0) {
+    AppendEarlyDebugLog("protect socket skipped invalid fd=" +
+                        std::to_string(fd));
+    return;
+  }
+
+  auto request = std::make_shared<ProtectRequest>();
+  {
+    std::lock_guard<std::mutex> lock(g_protect_requests_mutex);
+    request->id = g_next_protect_request_id++;
+    request->fd = fd;
+    g_protect_requests[request->id] = request;
+    g_pending_protect_request_ids.push_back(request->id);
+  }
+
+  AppendEarlyDebugLog(
+      "protect socket queued id=" + std::to_string(request->id) +
+      " fd=" + std::to_string(fd));
+
+  std::unique_lock<std::mutex> lock(request->mutex);
+  const bool completed = request->condition.wait_for(
+      lock, kInvokeTimeout, [&request]() {
+        return request->completed;
+      });
+  const auto result = request->result;
+  lock.unlock();
+
+  {
+    std::lock_guard<std::mutex> requests_lock(g_protect_requests_mutex);
+    g_protect_requests.erase(request->id);
+  }
+
+  if (!completed) {
+    AppendEarlyDebugLog(
+        "protect socket timeout id=" + std::to_string(request->id) +
+        " fd=" + std::to_string(fd));
+    return;
+  }
+
+  AppendEarlyDebugLog(
+      "protect socket completed id=" + std::to_string(request->id) +
+      " fd=" + std::to_string(fd) +
+      " result=" + std::to_string(result));
+}
+
+char *ResolveProcessNoop(void *, int, const char *, const char *, int) {
+  return nullptr;
+}
+
 std::vector<std::string> BuildCoreCandidates(const char *entry_library_path) {
   const std::string library_path = entry_library_path == nullptr
                                        ? std::string()
@@ -162,12 +251,14 @@ std::string BuildChildCoreLogPath(const std::string &entry_params) {
 }
 
 bool EnsureCoreLoaded() {
-  if (g_invoke_action != nullptr && g_start_tun != nullptr &&
+  if (g_invoke_action != nullptr && g_quick_setup != nullptr &&
+      g_start_tun != nullptr &&
       g_stop_tun != nullptr) {
     return true;
   }
   std::lock_guard<std::mutex> lock(g_state_mutex);
-  if (g_invoke_action != nullptr && g_start_tun != nullptr &&
+  if (g_invoke_action != nullptr && g_quick_setup != nullptr &&
+      g_start_tun != nullptr &&
       g_stop_tun != nullptr) {
     return true;
   }
@@ -196,12 +287,22 @@ bool EnsureCoreLoaded() {
     g_set_event_listener =
         reinterpret_cast<SetEventListenerFn>(event_listener_symbol);
   }
+  auto quick_setup_symbol = dlsym(g_core_handle, "quickSetup");
+  if (quick_setup_symbol == nullptr) {
+    const char *error = dlerror();
+    g_invoke_action = nullptr;
+    g_free_c_string = nullptr;
+    g_set_event_listener = nullptr;
+    return SetError(error == nullptr ? "dlsym quickSetup failed" : error);
+  }
+  g_quick_setup = reinterpret_cast<QuickSetupFn>(quick_setup_symbol);
   auto start_tun_symbol = dlsym(g_core_handle, "startTUN");
   if (start_tun_symbol == nullptr) {
     const char *error = dlerror();
     g_invoke_action = nullptr;
     g_free_c_string = nullptr;
     g_set_event_listener = nullptr;
+    g_quick_setup = nullptr;
     return SetError(error == nullptr ? "dlsym startTUN failed" : error);
   }
   g_start_tun = reinterpret_cast<StartTunFn>(start_tun_symbol);
@@ -211,10 +312,22 @@ bool EnsureCoreLoaded() {
     g_invoke_action = nullptr;
     g_free_c_string = nullptr;
     g_set_event_listener = nullptr;
+    g_quick_setup = nullptr;
     g_start_tun = nullptr;
     return SetError(error == nullptr ? "dlsym stopTun failed" : error);
   }
   g_stop_tun = reinterpret_cast<StopTunFn>(stop_tun_symbol);
+  auto protect_symbol = dlsym(g_core_handle, "protect_func");
+  if (protect_symbol != nullptr) {
+    g_protect_bridge = reinterpret_cast<ProtectBridgeFn *>(protect_symbol);
+    *g_protect_bridge = &ProtectSocketFromVpn;
+  }
+  auto resolve_symbol = dlsym(g_core_handle, "resolve_process_func");
+  if (resolve_symbol != nullptr) {
+    g_resolve_process_bridge =
+        reinterpret_cast<ResolveProcessBridgeFn *>(resolve_symbol);
+    *g_resolve_process_bridge = &ResolveProcessNoop;
+  }
   if (g_set_event_listener != nullptr && !g_event_listener_registered) {
     g_set_event_listener(reinterpret_cast<void *>(&ResultCallback));
     g_event_listener_registered = true;
@@ -302,9 +415,6 @@ void ResultCallback(const char *data) {
   std::string payload;
   if (data != nullptr) {
     payload = data;
-    if (g_free_c_string != nullptr) {
-      g_free_c_string(const_cast<char *>(data));
-    }
   }
   std::shared_ptr<PendingResult> pending_result;
   const auto id = ExtractJsonStringField(payload, "id");
@@ -358,6 +468,25 @@ void ResultCallback(const char *data) {
   pending_result->condition.notify_one();
 }
 
+void QuickSetupCallback(const char *data) {
+  QuickSetupResult *result = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    result = g_quick_setup_result;
+  }
+  if (result == nullptr) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(result->mutex);
+    if (data != nullptr) {
+      result->payload = data;
+    }
+    result->completed = true;
+  }
+  result->condition.notify_one();
+}
+
 napi_value CreateString(napi_env env, const std::string &value) {
   napi_value result = nullptr;
   napi_create_string_utf8(env, value.c_str(), value.size(), &result);
@@ -388,6 +517,10 @@ std::string InvokeCoreBlocking(const std::string &action) {
     return "";
   }
   const auto method = ExtractJsonStringField(action, "method");
+  if (method == "getIsInit") {
+    AppendEarlyDebugLog("InvokeCoreBlocking getIsInit begin id=" + id +
+                        " action=" + action);
+  }
   if (IsDetachedActionMethod(method)) {
     {
       std::lock_guard<std::mutex> lock(g_state_mutex);
@@ -406,6 +539,10 @@ std::string InvokeCoreBlocking(const std::string &action) {
   }
 
   g_invoke_action(reinterpret_cast<void *>(&ResultCallback), action.c_str());
+  if (method == "getIsInit") {
+    AppendEarlyDebugLog("InvokeCoreBlocking getIsInit invokeAction returned id=" +
+                        id);
+  }
 
   std::unique_lock<std::mutex> lock(pending_result->mutex);
   const bool completed = pending_result->condition.wait_for(
@@ -420,8 +557,16 @@ std::string InvokeCoreBlocking(const std::string &action) {
     g_pending_results.erase(id);
     if (!completed) {
       SetError("invokeCore timeout: " + id);
+      if (method == "getIsInit") {
+        AppendEarlyDebugLog("InvokeCoreBlocking getIsInit timeout id=" + id);
+      }
       return "";
     }
+  }
+
+  if (method == "getIsInit") {
+    AppendEarlyDebugLog("InvokeCoreBlocking getIsInit completed id=" + id +
+                        " payload=" + payload);
   }
 
   return payload;
@@ -571,6 +716,16 @@ napi_value StartTun(napi_env env, napi_callback_info info) {
   std::string address = readStringArg(args[2]);
   std::string dns = readStringArg(args[3]);
 
+  int fd_flags = fcntl(fd, F_GETFL);
+  int fd_error = errno;
+  AppendEarlyDebugLog(
+      "StartTun request fd=" + std::to_string(fd) +
+      " flags=" + std::to_string(fd_flags) +
+      " fdErrno=" + std::to_string(fd_error) +
+      " stack=" + stack +
+      " address=" + address +
+      " dns=" + dns);
+
   std::vector<char> stack_buffer(stack.begin(), stack.end());
   stack_buffer.push_back('\0');
   std::vector<char> address_buffer(address.begin(), address.end());
@@ -583,16 +738,73 @@ napi_value StartTun(napi_env env, napi_callback_info info) {
     ClearError();
   }
   const bool ok = g_start_tun(
-      nullptr,
+      reinterpret_cast<void *>(&g_tun_callback_token),
       fd,
       stack_buffer.data(),
       address_buffer.data(),
       dns_buffer.data());
+  AppendEarlyDebugLog(
+      "StartTun result ok=" + std::to_string(ok ? 1 : 0) +
+      " fd=" + std::to_string(fd) +
+      " lastError=" + g_last_error);
   if (!ok) {
     std::lock_guard<std::mutex> lock(g_state_mutex);
     SetError("startTUN returned false");
   }
   return CreateBool(env, ok);
+}
+
+napi_value QuickSetup(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 2) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError("missing init/setup params for quickSetup");
+    return CreateString(env, "missing init/setup params");
+  }
+  if (!EnsureCoreLoaded()) {
+    return CreateString(env, "");
+  }
+
+  std::string init_params = ReadStringArg(env, args[0]);
+  std::string setup_params = ReadStringArg(env, args[1]);
+  std::vector<char> init_params_buffer(init_params.begin(), init_params.end());
+  init_params_buffer.push_back('\0');
+  std::vector<char> setup_params_buffer(setup_params.begin(), setup_params.end());
+  setup_params_buffer.push_back('\0');
+
+  QuickSetupResult quick_setup_result;
+  {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    ClearError();
+    g_quick_setup_result = &quick_setup_result;
+  }
+  AppendEarlyDebugLog("QuickSetup begin");
+  g_quick_setup(
+      reinterpret_cast<void *>(&QuickSetupCallback),
+      init_params_buffer.data(),
+      setup_params_buffer.data());
+
+  std::unique_lock<std::mutex> lock(quick_setup_result.mutex);
+  const bool completed = quick_setup_result.condition.wait_for(
+      lock, kInvokeTimeout, [&quick_setup_result]() {
+        return quick_setup_result.completed;
+      });
+  const std::string payload = quick_setup_result.payload;
+  lock.unlock();
+
+  {
+    std::lock_guard<std::mutex> state_lock(g_state_mutex);
+    g_quick_setup_result = nullptr;
+    if (!completed) {
+      SetError("quickSetup timeout");
+      AppendEarlyDebugLog("QuickSetup timeout");
+      return CreateString(env, "quickSetup timeout");
+    }
+  }
+  AppendEarlyDebugLog("QuickSetup done payload=" + payload);
+  return CreateString(env, payload);
 }
 
 napi_value StopTun(napi_env env, napi_callback_info info) {
@@ -605,6 +817,70 @@ napi_value StopTun(napi_env env, napi_callback_info info) {
     ClearError();
   }
   g_stop_tun();
+  return CreateBool(env, true);
+}
+
+napi_value ConsumeProtectRequests(napi_env env, napi_callback_info info) {
+  (void)info;
+  std::vector<std::shared_ptr<ProtectRequest>> requests;
+  {
+    std::lock_guard<std::mutex> lock(g_protect_requests_mutex);
+    for (const auto id : g_pending_protect_request_ids) {
+      auto it = g_protect_requests.find(id);
+      if (it != g_protect_requests.end()) {
+        requests.push_back(it->second);
+      }
+    }
+    g_pending_protect_request_ids.clear();
+  }
+  if (requests.empty()) {
+    return CreateString(env, "[]");
+  }
+
+  std::string payload = "[";
+  for (size_t index = 0; index < requests.size(); ++index) {
+    if (index > 0) {
+      payload += ",";
+    }
+    payload += "{\"id\":";
+    payload += std::to_string(requests[index]->id);
+    payload += ",\"fd\":";
+    payload += std::to_string(requests[index]->fd);
+    payload += "}";
+  }
+  payload += "]";
+  return CreateString(env, payload);
+}
+
+napi_value CompleteProtectRequest(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 2) {
+    return CreateBool(env, false);
+  }
+
+  int32_t request_id = 0;
+  int32_t result = -1;
+  napi_get_value_int32(env, args[0], &request_id);
+  napi_get_value_int32(env, args[1], &result);
+
+  std::shared_ptr<ProtectRequest> request;
+  {
+    std::lock_guard<std::mutex> lock(g_protect_requests_mutex);
+    auto it = g_protect_requests.find(request_id);
+    if (it == g_protect_requests.end()) {
+      return CreateBool(env, false);
+    }
+    request = it->second;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(request->mutex);
+    request->result = result;
+    request->completed = true;
+  }
+  request->condition.notify_all();
   return CreateBool(env, true);
 }
 
@@ -697,7 +973,7 @@ napi_value StartCoreChildProcess(napi_env env, napi_callback_info info) {
 
   int32_t pid = -1;
   const auto err = OH_Ability_StartNativeChildProcess(
-      "libentry_child.so:FlClashCoreMain",
+      "libentry.so:FlClashCoreMain",
       child_args,
       options,
       &pid);
@@ -737,12 +1013,13 @@ napi_value StartCoreChildProcess(napi_env env, napi_callback_info info) {
 }
 
 napi_value StartBundledCoreProcess(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  if (argc < 2) {
+  if (argc < 3) {
     std::lock_guard<std::mutex> lock(g_state_mutex);
-    SetError("missing sourcePath or socketPath for startBundledCoreProcess");
+    SetError(
+        "missing sourcePath, socketPath or logDirPath for startBundledCoreProcess");
     return CreateInt32(env, -1);
   }
 
@@ -757,10 +1034,9 @@ napi_value StartBundledCoreProcess(napi_env env, napi_callback_info info) {
 
   const std::string source_path = readStringArg(args[0]);
   const std::string socket_path = readStringArg(args[1]);
-  const std::string debug_log_path =
-      JoinPath(DirName(source_path), "flclash-bridge.log");
-  const std::string core_debug_log_path =
-      JoinPath(DirName(source_path), "flclash-core.log");
+  const std::string log_dir_path = readStringArg(args[2]);
+  const std::string debug_log_path = JoinPath(log_dir_path, "flclash-bridge.log");
+  const std::string core_debug_log_path = JoinPath(log_dir_path, "flclash-core.log");
 
   {
     std::lock_guard<std::mutex> lock(g_state_mutex);
@@ -768,7 +1044,32 @@ napi_value StartBundledCoreProcess(napi_env env, napi_callback_info info) {
   }
   AppendDebugLog(
       debug_log_path,
-      "startBundledCoreProcess source=" + source_path + " socket=" + socket_path);
+      "startBundledCoreProcess source=" + source_path + " socket=" + socket_path +
+          " logDir=" + log_dir_path);
+  errno = 0;
+  struct stat source_stat {};
+  const int stat_result = stat(source_path.c_str(), &source_stat);
+  const int stat_errno = errno;
+  AppendDebugLog(
+      debug_log_path,
+      "source stat result=" + std::to_string(stat_result) +
+          " errno=" + std::to_string(stat_errno) +
+          " mode=" + std::to_string(static_cast<unsigned int>(source_stat.st_mode)) +
+          " size=" + std::to_string(static_cast<long long>(source_stat.st_size)));
+  errno = 0;
+  const int access_exists = access(source_path.c_str(), F_OK);
+  const int access_exists_errno = errno;
+  AppendDebugLog(
+      debug_log_path,
+      "source access F_OK=" + std::to_string(access_exists) +
+          " errno=" + std::to_string(access_exists_errno));
+  errno = 0;
+  const int access_exec = access(source_path.c_str(), X_OK);
+  const int access_exec_errno = errno;
+  AppendDebugLog(
+      debug_log_path,
+      "source access X_OK=" + std::to_string(access_exec) +
+          " errno=" + std::to_string(access_exec_errno));
   if (chmod(source_path.c_str(), 0755) != 0) {
     AppendDebugLog(
         debug_log_path,
@@ -778,40 +1079,137 @@ napi_value StartBundledCoreProcess(napi_env env, napi_callback_info info) {
     return CreateInt32(env, -1);
   }
   AppendDebugLog(debug_log_path, "chmod source ok");
+  errno = 0;
+  const int post_chmod_exec = access(source_path.c_str(), X_OK);
+  const int post_chmod_exec_errno = errno;
+  AppendDebugLog(
+      debug_log_path,
+      "source access X_OK after chmod=" + std::to_string(post_chmod_exec) +
+          " errno=" + std::to_string(post_chmod_exec_errno));
 
-  const pid_t pid = fork();
-  if (pid < 0) {
+  pid_t pid = -1;
+  std::vector<char *> argv;
+  argv.push_back(const_cast<char *>(source_path.c_str()));
+  if (!socket_path.empty()) {
+    argv.push_back(const_cast<char *>(socket_path.c_str()));
+  }
+  argv.push_back(const_cast<char *>(core_debug_log_path.c_str()));
+  argv.push_back(nullptr);
+
+  const int spawn_err = posix_spawn(
+      &pid,
+      source_path.c_str(),
+      nullptr,
+      nullptr,
+      argv.data(),
+      nullptr);
+  if (spawn_err != 0) {
     AppendDebugLog(
         debug_log_path,
-        std::string("fork failed: ") + std::strerror(errno));
+        std::string("posix_spawn failed: ") + std::strerror(spawn_err) +
+            " code=" + std::to_string(spawn_err));
     std::lock_guard<std::mutex> lock(g_state_mutex);
-    SetError(std::string("fork failed: ") + std::strerror(errno));
+    SetError(
+        std::string("posix_spawn failed: ") + std::strerror(spawn_err) +
+        " code=" + std::to_string(spawn_err));
     return CreateInt32(env, -1);
   }
 
-  if (pid == 0) {
-    AppendDebugLog(debug_log_path, "child process entered");
-    std::vector<char *> argv;
-    argv.push_back(const_cast<char *>(source_path.c_str()));
-    if (!socket_path.empty()) {
-      argv.push_back(const_cast<char *>(socket_path.c_str()));
-    }
-    argv.push_back(const_cast<char *>(core_debug_log_path.c_str()));
-    argv.push_back(nullptr);
-    execv(source_path.c_str(), argv.data());
-    AppendDebugLog(
-        debug_log_path,
-        std::string("execv source failed: ") + std::strerror(errno));
-    std::fprintf(
-        stderr,
-        "[OHOS-CORE] source exec failed: %s\n",
-        std::strerror(errno));
-    std::fflush(stderr);
-    _exit(127);
+  AppendDebugLog(debug_log_path, "posix_spawn ok pid=" + std::to_string(pid));
+  return CreateInt32(env, pid);
+}
+
+napi_value StartEmbeddedCore(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 2) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError("missing socketPath or logDirPath for startEmbeddedCore");
+    return CreateInt32(env, -1);
   }
 
-  AppendDebugLog(debug_log_path, "fork ok pid=" + std::to_string(pid));
-  return CreateInt32(env, pid);
+  auto readStringArg = [&](napi_value value) {
+    size_t value_length = 0;
+    napi_get_value_string_utf8(env, value, nullptr, 0, &value_length);
+    std::string result(value_length, '\0');
+    napi_get_value_string_utf8(
+        env, value, &result[0], value_length + 1, &value_length);
+    return result;
+  };
+
+  const std::string socket_path = readStringArg(args[0]);
+  const std::string log_dir_path = readStringArg(args[1]);
+  const std::string debug_log_path = JoinPath(log_dir_path, "flclash-bridge.log");
+  const std::string core_log_path = JoinPath(log_dir_path, "flclash-core.log");
+
+  {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    ClearError();
+    if (g_embedded_core_started) {
+      SetError("embedded core already started");
+      return CreateInt32(env, -1);
+    }
+    g_embedded_core_started = true;
+  }
+
+  AppendDebugLog(
+      debug_log_path,
+      "startEmbeddedCore socket=" + socket_path + " logDir=" + log_dir_path);
+  g_embedded_core_thread = std::thread(
+      [socket_path, core_log_path, debug_log_path]() {
+        AppendDebugLog(debug_log_path, "embedded core thread start");
+        dlerror();
+        void *core_handle = dlopen("libclash.so", RTLD_NOW | RTLD_LOCAL);
+        if (core_handle == nullptr) {
+          const char *error = dlerror();
+          const std::string message =
+              "startEmbeddedCore dlopen libclash.so failed: " +
+              std::string(error == nullptr ? "unknown" : error);
+          {
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            SetError(message);
+            g_embedded_core_started = false;
+          }
+          AppendDebugLog(debug_log_path, message);
+          return;
+        }
+
+        auto *start_server_process = reinterpret_cast<StartServerProcessDetachedFn>(
+            dlsym(core_handle, "startServerProcessDetached"));
+        if (start_server_process == nullptr) {
+          const char *error = dlerror();
+          const std::string message =
+              "startEmbeddedCore dlsym startServerProcessDetached failed: " +
+              std::string(error == nullptr ? "unknown" : error);
+          {
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            SetError(message);
+            g_embedded_core_started = false;
+          }
+          AppendDebugLog(debug_log_path, message);
+          dlclose(core_handle);
+          return;
+        }
+
+        std::vector<char> socket_path_buffer(socket_path.begin(), socket_path.end());
+        socket_path_buffer.push_back('\0');
+        std::vector<char> core_log_path_buffer(core_log_path.begin(), core_log_path.end());
+        core_log_path_buffer.push_back('\0');
+
+        AppendDebugLog(debug_log_path, "embedded core startServerProcessDetached enter");
+        start_server_process(
+            socket_path.empty() ? nullptr : socket_path_buffer.data(),
+            core_log_path.empty() ? nullptr : core_log_path_buffer.data());
+        AppendDebugLog(debug_log_path, "embedded core startServerProcessDetached returned");
+        dlclose(core_handle);
+        {
+          std::lock_guard<std::mutex> lock(g_state_mutex);
+          g_embedded_core_started = false;
+        }
+      });
+  g_embedded_core_thread.detach();
+  return CreateInt32(env, static_cast<int32_t>(getpid()));
 }
 
 }  // namespace
@@ -833,8 +1231,16 @@ static napi_value Init(napi_env env, napi_value exports) {
        nullptr, nullptr, napi_default, nullptr},
       {"startBundledCoreProcess", nullptr, StartBundledCoreProcess, nullptr,
        nullptr, nullptr, napi_default, nullptr},
+      {"startEmbeddedCore", nullptr, StartEmbeddedCore, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"quickSetup", nullptr, QuickSetup, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"lastError", nullptr, LastError, nullptr, nullptr, nullptr,
        napi_default, nullptr},
+      {"consumeProtectRequests", nullptr, ConsumeProtectRequests, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
+      {"completeProtectRequest", nullptr, CompleteProtectRequest, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
       {"startTun", nullptr, StartTun, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"stopTun", nullptr, StopTun, nullptr, nullptr, nullptr,
@@ -881,6 +1287,45 @@ extern "C" __attribute__((visibility("default"))) void FlClashCoreMain(
   const std::string entry_params =
       args.entryParams == nullptr ? std::string() : std::string(args.entryParams);
   const std::string debug_log_path = BuildChildDebugLogPath(entry_params);
+  const std::string core_log_path = BuildChildCoreLogPath(entry_params);
   AppendDebugLog(debug_log_path, "FlClashCoreMain entry socket=" + entry_params);
   LogChildProcess("bridge FlClashCoreMain entry socket=" + entry_params);
+
+  dlerror();
+  void *core_handle = dlopen("libclash.so", RTLD_NOW | RTLD_LOCAL);
+  if (core_handle == nullptr) {
+    const char *error = dlerror();
+    const std::string message =
+        "FlClashCoreMain dlopen libclash.so failed: " +
+        std::string(error == nullptr ? "unknown" : error);
+    AppendDebugLog(debug_log_path, message);
+    LogChildProcess(message);
+    return;
+  }
+
+  auto *start_server_process = reinterpret_cast<StartServerProcessFn>(
+      dlsym(core_handle, "startServerProcess"));
+  if (start_server_process == nullptr) {
+    const char *error = dlerror();
+    const std::string message =
+        "FlClashCoreMain dlsym startServerProcess failed: " +
+        std::string(error == nullptr ? "unknown" : error);
+    AppendDebugLog(debug_log_path, message);
+    LogChildProcess(message);
+    dlclose(core_handle);
+    return;
+  }
+
+  std::vector<char> entry_params_buffer(entry_params.begin(), entry_params.end());
+  entry_params_buffer.push_back('\0');
+  std::vector<char> core_log_path_buffer(core_log_path.begin(), core_log_path.end());
+  core_log_path_buffer.push_back('\0');
+
+  start_server_process(
+      entry_params.empty() ? nullptr : entry_params_buffer.data(),
+      core_log_path.empty() ? nullptr : core_log_path_buffer.data());
+
+  AppendDebugLog(debug_log_path, "FlClashCoreMain startServerProcess returned");
+  LogChildProcess("bridge FlClashCoreMain startServerProcess returned");
+  dlclose(core_handle);
 }

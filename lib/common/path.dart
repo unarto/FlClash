@@ -68,16 +68,47 @@ class AppPath {
       return const [];
     }
     final candidates = <String>[];
+    if (ohosNativeLibraryDirPath.isNotEmpty) {
+      candidates.addAll([
+        join(ohosNativeLibraryDirPath, 'FlClashCore'),
+        join(ohosNativeLibraryDirPath, 'libFlClashCore.so'),
+      ]);
+    }
+    if (ohosCodeDirPath.isNotEmpty) {
+      candidates.addAll([
+        join(ohosCodeDirPath, 'libs', 'arm64', 'FlClashCore'),
+        join(ohosCodeDirPath, 'libs', 'arm64', 'libFlClashCore.so'),
+        join(ohosCodeDirPath, 'libs', 'arm64-v8a', 'FlClashCore'),
+        join(ohosCodeDirPath, 'libs', 'arm64-v8a', 'libFlClashCore.so'),
+      ]);
+    }
     if (ohosCodeDirPath.isNotEmpty && ohosNativeLibraryDirPath.isNotEmpty) {
       candidates.addAll([
         join(ohosCodeDirPath, ohosNativeLibraryDirPath, 'FlClashCore'),
         join(ohosCodeDirPath, ohosNativeLibraryDirPath, 'libFlClashCore.so'),
+        join(ohosCodeDirPath, 'entry', ohosNativeLibraryDirPath, 'FlClashCore'),
+        join(
+          ohosCodeDirPath,
+          'entry',
+          ohosNativeLibraryDirPath,
+          'libFlClashCore.so',
+        ),
       ]);
     }
     if (ohosBundleCodeDirPath.isNotEmpty) {
       candidates.addAll([
         join(ohosBundleCodeDirPath, 'libs', 'arm64', 'FlClashCore'),
         join(ohosBundleCodeDirPath, 'libs', 'arm64', 'libFlClashCore.so'),
+        join(ohosBundleCodeDirPath, 'libs', 'arm64-v8a', 'FlClashCore'),
+        join(ohosBundleCodeDirPath, 'libs', 'arm64-v8a', 'libFlClashCore.so'),
+        join(ohosBundleCodeDirPath, 'entry', 'libs', 'arm64', 'FlClashCore'),
+        join(
+          ohosBundleCodeDirPath,
+          'entry',
+          'libs',
+          'arm64',
+          'libFlClashCore.so',
+        ),
       ]);
     }
     return candidates.toSet().toList();

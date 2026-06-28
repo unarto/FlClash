@@ -94,14 +94,23 @@ class CoreService extends CoreHandlerInterface {
       return;
     }
     final homeDir = await appPath.homeDirPath;
-    for (final fileName in const ['flclash-bridge.log', 'flclash-core.log']) {
-      final file = File(join(homeDir, fileName));
+    final files = <String>[
+      join(homeDir, 'flclash-bridge.log'),
+      join(homeDir, 'flclash-core.log'),
+      '/data/storage/el2/base/files/flclash-core.log',
+      '/data/storage/el2/base/files/flclash-libentry.log',
+    ];
+    for (final path in files) {
+      final file = File(path);
+      final label = path.startsWith(homeDir)
+          ? path.substring(homeDir.length + 1)
+          : path;
       if (!await file.exists()) {
-        commonPrint.log('[OHOS-CORE] $tag $fileName missing');
+        commonPrint.log('[OHOS-CORE] $tag $label missing');
         continue;
       }
       final content = await file.readAsString();
-      commonPrint.log('[OHOS-CORE] $tag $fileName => $content');
+      commonPrint.log('[OHOS-CORE] $tag $label => $content');
     }
   }
 
@@ -119,37 +128,60 @@ class CoreService extends CoreHandlerInterface {
     }
     try {
       if (system.isOhos) {
-        try {
-          _ohosChildPid = await app?.startCoreChildProcess(_transport.address);
-          commonPrint.log('Started OHOS core child process pid=$_ohosChildPid');
-          await _transport.connectionCompleter.future;
-          return;
-        } on PlatformException catch (e) {
+        await appPath.initOhosPaths();
+        final homeDir = await appPath.homeDirPath;
+        for (final path in <String>{
+          join(homeDir, 'flclash-bridge.log'),
+          join(homeDir, 'flclash-core.log'),
+          '/data/storage/el2/base/files/flclash-bridge.log',
+          '/data/storage/el2/base/files/flclash-core.log',
+          '/data/storage/el2/base/files/flclash-libentry.log',
+          '/data/storage/el2/base/files/flclash-child.log',
+        }) {
+          await File(path).safeDelete();
+        }
+        final childPid = await app?.startCoreChildProcess(_transport.address);
+        if (childPid != null && childPid > 0) {
+          _ohosChildPid = childPid;
           commonPrint.log(
-            'OHOS native child process unavailable, fallback to bundled exec: $e',
+            'Started OHOS core child process pid=$_ohosChildPid',
+          );
+        } else {
+          commonPrint.log(
+            'OHOS native child process unavailable pid=$childPid, fallback to embedded core',
             logLevel: LogLevel.warning,
           );
-        }
-        final sourcePath = await appPath.ohosBundledCorePath;
-        for (final fileName in const [
-          'flclash-bridge.log',
-          'flclash-core.log',
-        ]) {
-          await File(join(await appPath.homeDirPath, fileName)).safeDelete();
-        }
-        final pid = await app?.startBundledCoreProcess(
-          sourcePath,
-          _transport.address,
-        );
-        if (pid == null || pid <= 0) {
-          throw StateError(
-            'startBundledCoreProcess returned invalid pid: $pid',
+          final embeddedPid = await app?.startEmbeddedCore(
+            _transport.address,
+            await appPath.homeDirPath,
           );
+          if (embeddedPid != null && embeddedPid > 0) {
+            _ohosChildPid = embeddedPid;
+            commonPrint.log(
+              'Started OHOS embedded core pid=$_ohosChildPid',
+            );
+          } else {
+            commonPrint.log(
+              'OHOS embedded core unavailable pid=$embeddedPid, fallback to bundled executable',
+              logLevel: LogLevel.warning,
+            );
+            final sourcePath = await _resolveOhosCoreExecutablePath();
+            final pid = await app?.startBundledCoreProcess(
+              sourcePath,
+              _transport.address,
+              await appPath.homeDirPath,
+            );
+            if (pid == null || pid <= 0) {
+              throw StateError(
+                'startBundledCoreProcess returned invalid pid: $pid',
+              );
+            }
+            _ohosChildPid = pid;
+            commonPrint.log(
+              'Started OHOS core executable via native bridge pid=$_ohosChildPid source=$sourcePath',
+            );
+          }
         }
-        _ohosChildPid = pid;
-        commonPrint.log(
-          'Started OHOS core executable via native bridge pid=$_ohosChildPid source=$sourcePath',
-        );
         unawaited(() async {
           await Future<void>.delayed(const Duration(seconds: 1));
           await _dumpOhosCoreLogs('after-start-1s');
@@ -175,6 +207,40 @@ class CoreService extends CoreHandlerInterface {
       }
     });
     await _transport.connectionCompleter.future;
+  }
+
+  Future<String> _resolveOhosCoreExecutablePath() async {
+    final candidates = [
+      ...appPath.ohosCorePathCandidates,
+      await appPath.ohosBundledCorePath,
+    ];
+    for (final candidate in candidates) {
+      if ((candidate.contains('/bundle/libs/') ||
+              candidate.contains('/public/com.follow.clash/libs/')) &&
+          (candidate.endsWith('/libFlClashCore.so') ||
+              candidate.endsWith('/FlClashCore'))) {
+        commonPrint.log(
+          '[OHOS-CORE] prefer packaged executable candidate=$candidate',
+        );
+        return candidate;
+      }
+    }
+    for (final candidate in candidates) {
+      final exists = await File(candidate).exists();
+      commonPrint.log(
+        '[OHOS-CORE] probe executable candidate=$candidate exists=$exists',
+      );
+      if (exists) {
+        commonPrint.log('[OHOS-CORE] use executable candidate=$candidate');
+        return candidate;
+      }
+    }
+    final fallback = await appPath.ohosBundledCorePath;
+    commonPrint.log(
+      '[OHOS-CORE] no executable candidate exists, fallback=$fallback',
+      logLevel: LogLevel.warning,
+    );
+    return fallback;
   }
 
   @override
