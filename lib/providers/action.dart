@@ -475,8 +475,10 @@ class SetupAction extends _$SetupAction {
             return;
           }
           // OHOS VPN: the VPN-process core now dials the main app's CoreService
-          // socket, so subscribe to it for live status/traffic/connections.
+          // socket, so subscribe to it for live status/traffic/connections and
+          // reflect the established link in the dashboard status chip.
           await _handleStart();
+          ref.read(coreStatusProvider.notifier).value = CoreStatus.connected;
         } else {
           await _handleStart();
           applyProfileDebounce(force: true, silence: true);
@@ -491,9 +493,10 @@ class SetupAction extends _$SetupAction {
               ref.read(runTimeProvider.notifier).value = null;
               return;
             }
-            // OHOS VPN: the VPN-process core now dials the main app's CoreService
-          // socket, so subscribe to it for live status/traffic/connections.
-          await _handleStart();
+            // OHOS VPN: subscribe to the now-linked VPN-process core and reflect
+            // the established link in the dashboard status chip.
+            await _handleStart();
+            ref.read(coreStatusProvider.notifier).value = CoreStatus.connected;
           } else {
             await applyProfile(
               force: true,
@@ -508,7 +511,9 @@ class SetupAction extends _$SetupAction {
       }
     } else {
       await handleStop(syncCoreState: !useOhosVpnConfigOnly);
-      if (!useOhosVpnConfigOnly) {
+      if (useOhosVpnConfigOnly) {
+        ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
+      } else {
         coreController.resetTraffic();
       }
       ref.read(trafficsProvider.notifier).clear();
