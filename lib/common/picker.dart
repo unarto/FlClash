@@ -1,6 +1,4 @@
-import 'dart:convert';
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
@@ -206,7 +204,7 @@ class Picker {
     if (system.isOhos) {
       result = await CoreController().decodeQrImage(imagePath);
       commonPrint.log(
-        '[ohos-qr] pickerConfigQRCode capture=${result == null || result.isEmpty ? 0 : 1}',
+        '[ohos-qr] pickerConfigQRCode capture=${result.isEmpty ? 0 : 1}',
       );
     } else {
       final controller = MobileScannerController();

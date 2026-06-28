@@ -7,7 +7,6 @@ import 'package:fl_clash/core/core.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/core.dart';
 import 'package:fl_clash/plugins/app.dart';
-import 'package:flutter/services.dart';
 import 'package:path/path.dart';
 
 import 'interface.dart';

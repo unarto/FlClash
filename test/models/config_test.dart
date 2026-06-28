@@ -8,6 +8,7 @@ import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Helper to round-trip a model through JSON encode/decode.
@@ -368,10 +369,13 @@ void main() {
       expect(fakeIpFilter, contains('nps-drcn.platform.dbankcloud.cn'));
       expect(fakeIpFilter, contains('*.grs.dbankcloud.cn'));
       expect(fakeIpFilter, contains('*.grs.dbankcloud.com'));
-      expect(fakeIpFilter, contains('youtube.com'));
-      expect(fakeIpFilter, contains('*.youtube.com'));
-      expect(fakeIpFilter, contains('www.youtube.com'));
-      expect(fakeIpFilter, contains('m.youtube.com'));
+      // YouTube is intentionally NOT in the fake-ip-filter: it must get a
+      // fake-ip so it routes through the proxy by domain (the OHOS DNS
+      // de-poisoning fix in lib/common/task.dart). Keep it out of the filter.
+      expect(fakeIpFilter, isNot(contains('youtube.com')));
+      expect(fakeIpFilter, isNot(contains('*.youtube.com')));
+      expect(fakeIpFilter, isNot(contains('www.youtube.com')));
+      expect(fakeIpFilter, isNot(contains('m.youtube.com')));
     });
 
     test(
@@ -977,6 +981,31 @@ void main() {
   });
 
   group('Script.saveWithPath', () {
+    late Directory tempRoot;
+
+    setUp(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      tempRoot = Directory.systemTemp.createTempSync('flclash_script_test');
+      // path_provider has no platform implementation under `flutter test`;
+      // return a real temp dir so appPath's directory completers resolve.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('plugins.flutter.io/path_provider'),
+            (methodCall) async => tempRoot.path,
+          );
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('plugins.flutter.io/path_provider'),
+            null,
+          );
+      if (tempRoot.existsSync()) {
+        tempRoot.deleteSync(recursive: true);
+      }
+    });
+
     test('copies source file into the script target path', () async {
       await appPath.initOhosPaths();
       final sourceDir = Directory(await appPath.tempPath);

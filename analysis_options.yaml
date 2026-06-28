@@ -5,6 +5,11 @@ analyzer:
     - lib/l10n/intl/**
     - lib/**/generated/**
     - plugins/**
+    # Vendored third-party forks (riverpod/flutter_riverpod/smooth_sheets/sing-tun):
+    # analyzed/maintained upstream, not part of this project's lint surface.
+    - third_party/**
+    # Standalone dev/debug scripts, not part of the shipped app.
+    - tool/**
   errors:
     invalid_annotation_target: ignore
 

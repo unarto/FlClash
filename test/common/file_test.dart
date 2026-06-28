@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:fl_clash/common/file.dart';
-import 'package:test/test.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('DirectoryExt.safeClear', () {

@@ -392,7 +392,7 @@ class _SettingItem extends StatelessWidget {
 }
 
 class _DisclaimerItem extends ConsumerWidget {
-  const _DisclaimerItem({super.key});
+  const _DisclaimerItem();
 
   @override
   Widget build(BuildContext context, ref) {
@@ -410,7 +410,7 @@ class _DisclaimerItem extends ConsumerWidget {
 }
 
 class _InfoItem extends StatelessWidget {
-  const _InfoItem({super.key});
+  const _InfoItem();
 
   @override
   Widget build(BuildContext context) {
@@ -424,7 +424,7 @@ class _InfoItem extends StatelessWidget {
 }
 
 class _DeveloperItem extends StatelessWidget {
-  const _DeveloperItem({super.key});
+  const _DeveloperItem();
 
   @override
   Widget build(BuildContext context) {
