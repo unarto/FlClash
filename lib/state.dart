@@ -57,11 +57,9 @@ class GlobalState {
   }
 
   Future<ProviderContainer> init(int version) async {
-    print('[BOOT] GlobalState.init start');
     coreSHA256 = const String.fromEnvironment('CORE_SHA256');
     isPre = const String.fromEnvironment('APP_ENV') != 'stable';
     await _initDynamicColor();
-    print('[BOOT] GlobalState.init dynamic color done');
     return _initData(version);
   }
 
@@ -85,7 +83,6 @@ class GlobalState {
   BuildContext get _context => navigatorKey.currentContext!;
 
   Future<ProviderContainer> _initData(int version) async {
-    print('[BOOT] GlobalState._initData start');
     final appState = AppState(
       brightness: WidgetsBinding.instance.platformDispatcher.platformBrightness,
       version: version,
@@ -97,11 +94,8 @@ class GlobalState {
       systemUiOverlayStyle: const SystemUiOverlayStyle(),
     );
     final appStateOverrides = buildAppStateOverrides(appState);
-    print('[BOOT] appState overrides ready');
     packageInfo = await system.getPackageInfo();
-    print('[BOOT] packageInfo ready ${packageInfo.version}');
     final configMap = await preferences.getConfigMap();
-    print('[BOOT] preferences config loaded');
     final config = await migration.migrationIfNeeded(
       configMap,
       sync: (data) async {
@@ -120,22 +114,17 @@ class GlobalState {
         return config;
       },
     );
-    print('[BOOT] migration done');
     final configOverrides = buildConfigOverrides(config);
     container = ProviderContainer(
       overrides: [...appStateOverrides, ...configOverrides],
     );
-    print('[BOOT] provider container ready');
     final profiles = await database.profilesDao.query().get();
-    print('[BOOT] profiles query done ${profiles.length}');
     container.read(profilesProvider.notifier).setAndReorder(profiles);
     await AppLocalizations.load(
       utils.getLocaleForString(config.appSettingProps.locale) ??
           WidgetsBinding.instance.platformDispatcher.locale,
     );
-    print('[BOOT] l10n loaded');
     await window?.init(version, config.windowProps);
-    print('[BOOT] window init done');
     return container;
   }
 
@@ -343,57 +332,35 @@ class GlobalState {
         logLevel: LogLevel.warning,
       );
     };
-    print('[BOOT] attach initApp start');
     container.read(systemActionProvider.notifier).updateTray();
-    print('[BOOT] attach updateTray done');
     if (!shouldSkipOhosUiCoreStartup(container)) {
       container.read(profilesActionProvider.notifier).autoUpdateProfiles();
-      print('[BOOT] attach autoUpdateProfiles done');
     } else {
-      print('[BOOT] attach autoUpdateProfiles skipped for ohos config-only');
     }
     container.read(commonActionProvider.notifier).autoCheckUpdate();
-    print('[BOOT] attach autoCheckUpdate triggered');
     autoLaunch?.updateStatus(container.read(appSettingProvider).autoLaunch);
-    print('[BOOT] attach autoLaunch update done');
     if (!container.read(appSettingProvider).silentLaunch) {
       window?.show();
     } else {
       window?.hide();
     }
-    print('[BOOT] attach window visibility done');
     await _handleFailedPreference();
-    print('[BOOT] attach failedPreference done');
     await _handlerDisclaimer();
-    print('[BOOT] attach disclaimer done');
     await _showCrashlyticsTip();
-    print('[BOOT] attach crashlyticsTip done');
     if (system.isOhos) {
       await appPath.initOhosPaths();
-      print('[BOOT] attach initOhosPaths done');
     }
     final handledPendingDebugVpn = await _handlePendingDebugVpnStart();
     final skipOhosUiCoreStartup = shouldSkipOhosUiCoreStartup(container);
-    print(
-      '[BOOT] attach pendingDebugVpn done handled=$handledPendingDebugVpn skipOhosUiCoreStartup=$skipOhosUiCoreStartup',
-    );
     if (!handledPendingDebugVpn && !skipOhosUiCoreStartup) {
       await container.read(coreActionProvider.notifier).connectCore();
-      print('[BOOT] attach connectCore done');
       await container.read(coreActionProvider.notifier).initCore();
-      print('[BOOT] attach initCore done');
       await container.read(setupActionProvider.notifier).initStatus();
-      print('[BOOT] attach initStatus done');
     } else {
-      print('[BOOT] attach connectCore skipped');
-      print('[BOOT] attach initCore skipped');
       await container.read(setupActionProvider.notifier).initStatus();
-      print('[BOOT] attach initStatus done after core skip');
     }
     container.read(initProvider.notifier).value = true;
-    print('[BOOT] attach initProvider done');
     permissions.check();
-    print('[BOOT] attach permissions check triggered');
   }
 
   Future<bool> _handlePendingDebugVpnStart() async {
