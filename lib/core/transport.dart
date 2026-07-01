@@ -15,6 +15,35 @@ const _typeDisconnected = 0x02;
 const _typeData = 0x03;
 const _typeError = 0x04;
 
+class OhosDisconnectGate {
+  int _generation = 0;
+  int? _activeGeneration;
+  bool _didNotifyDisconnect = false;
+
+  int beginConnection() {
+    _generation += 1;
+    _activeGeneration = _generation;
+    _didNotifyDisconnect = false;
+    return _generation;
+  }
+
+  bool consumeDisconnect(int generation) {
+    if (_activeGeneration != generation || _didNotifyDisconnect) {
+      return false;
+    }
+    _activeGeneration = null;
+    _didNotifyDisconnect = true;
+    return true;
+  }
+
+  bool isActiveConnection(int generation) => _activeGeneration == generation;
+
+  void reset() {
+    _activeGeneration = null;
+    _didNotifyDisconnect = false;
+  }
+}
+
 class IPCCoreTransport {
   final String address;
   final StreamController<Uint8List> _dataController =
@@ -26,6 +55,8 @@ class IPCCoreTransport {
   ServerSocket? _serverSocket;
   Socket? _socket;
   final BytesBuilder _frameBuffer = BytesBuilder(copy: false);
+  final OhosDisconnectGate _ohosDisconnectGate = OhosDisconnectGate();
+  int? _activeOhosConnectionGeneration;
 
   void Function()? onDisconnect;
 
@@ -111,12 +142,17 @@ class IPCCoreTransport {
   }
 
   Future<void> disconnect() async {
+    final generation = _activeOhosConnectionGeneration;
     await _socketSubscription?.cancel();
     _socketSubscription = null;
     await _socket?.close();
     _socket = null;
     _frameBuffer.clear();
-    _handleOhosDisconnect();
+    if (generation != null) {
+      _handleOhosDisconnect(generation);
+    } else {
+      _ohosDisconnectGate.reset();
+    }
   }
 
   Future<void> close() async {
@@ -131,6 +167,8 @@ class IPCCoreTransport {
     if (!system.isOhos) {
       await stopIpcServer();
     }
+    _activeOhosConnectionGeneration = null;
+    _ohosDisconnectGate.reset();
     _readyCompleter = Completer<void>();
     _completer = Completer<void>();
     if (!_dataController.isClosed) {
@@ -143,7 +181,7 @@ class IPCCoreTransport {
       final path = address;
       final socketFile = File(path);
       if (await socketFile.exists()) {
-        await socketFile.delete();
+        await socketFile.safeDelete();
       }
       await socketFile.parent.create(recursive: true);
       _serverSocket = await ServerSocket.bind(
@@ -153,16 +191,23 @@ class IPCCoreTransport {
       );
       commonPrint.log('IPC Ready');
       _readyCompleter.safeCompleter(null);
-      _serverSocket!.listen((socket) {
+      _serverSocket!.listen((socket) async {
+        final generation = _ohosDisconnectGate.beginConnection();
+        _activeOhosConnectionGeneration = generation;
+        final previousSubscription = _socketSubscription;
+        final previousSocket = _socket;
         _socket = socket;
+        _socketSubscription = null;
+        await previousSubscription?.cancel();
+        await previousSocket?.close();
         commonPrint.log('IPC Connected');
         _completer.safeCompleter(null);
         _socketSubscription = socket.listen(
           _handleOhosSocketData,
-          onDone: _handleOhosDisconnect,
+          onDone: () => _handleOhosDisconnect(generation),
           onError: (error) {
             commonPrint.log('IPC error: $error', logLevel: LogLevel.error);
-            _handleOhosDisconnect();
+            _handleOhosDisconnect(generation);
           },
           cancelOnError: false,
         );
@@ -218,10 +263,18 @@ class IPCCoreTransport {
     socket.add(data);
   }
 
-  void _handleOhosDisconnect() {
+  void _handleOhosDisconnect(int generation) {
+    if (!_ohosDisconnectGate.consumeDisconnect(generation)) {
+      return;
+    }
     commonPrint.log('IPC Disconnected');
     _completer = Completer<void>();
     _socket = null;
+    _socketSubscription = null;
+    _frameBuffer.clear();
+    if (_activeOhosConnectionGeneration == generation) {
+      _activeOhosConnectionGeneration = null;
+    }
     onDisconnect?.call();
   }
 }

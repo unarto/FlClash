@@ -9,6 +9,7 @@ OUT_DIR_DEFAULT="$ROOT_DIR/.ohos_live"
 DEVECO_HDC="/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc"
 DEFAULT_TARGET_BUNDLE="com.easy.hmos.abroad"
 DEFAULT_TARGET_ABILITY="EntryAbility"
+DEFAULT_SHELL_ASSISTANT_BUNDLE="com.huawei.shell_assistant"
 DEFAULT_FLCLASH_BUNDLE="com.follow.clash"
 DEFAULT_FLCLASH_ABILITY="EntryAbility"
 DEFAULT_VPN_TOGGLE_X=1126
@@ -28,21 +29,22 @@ Environment:
   HDC_TARGET            Explicit HarmonyOS device target.
   TARGET_BUNDLE         Override compat app bundle. Default: com.easy.hmos.abroad
   TARGET_ABILITY        Override compat app ability. Default: EntryAbility
+  SHELL_ASSISTANT_BUNDLE Override compat host bundle. Default: com.huawei.shell_assistant
   FLCLASH_BUNDLE        Override FlClash bundle. Default: com.follow.clash
   FLCLASH_ABILITY       Override FlClash ability. Default: EntryAbility
   VPN_TOGGLE_X          Dashboard VPN button X coordinate. Default: 1126
   VPN_TOGGLE_Y          Dashboard VPN button Y coordinate. Default: 2300
   FLCLASH_LAUNCH_WAIT   Seconds to wait after launching FlClash. Default: 5
-  VPN_START_WAIT        Seconds to wait after tapping start VPN. Default: 8
-  TARGET_LAUNCH_WAIT    Seconds to wait after launching target app. Default: 12
-  TARGET_SETTLE_WAIT    Extra seconds before a delayed second counter sample. Default: 10
+  VPN_START_WAIT        Seconds to wait after tapping start VPN. Default: 15
+  TARGET_LAUNCH_WAIT    Seconds to wait after launching target app. Default: 20
+  TARGET_SETTLE_WAIT    Extra seconds before a delayed second counter sample. Default: 15
   OUT_DIR               Output directory for log artifacts. Default: .ohos_live
 
 What this verifies:
-  1. Force-stop FlClash, the target app, and com.huawei.shell_assistant.
+  1. Force-stop FlClash, the target app, and the configured compat host bundle.
   2. Launch FlClash and start the VPN from the dashboard.
   3. Capture vpn-tun counters before and after launching the compat app.
-  4. Save focused hilog evidence for shell-assistant trust, DNS failures, and HTTP success.
+  4. Save focused hilog evidence for compat-host trust, DNS failures, and HTTP success.
 EOF
 }
 
@@ -72,6 +74,7 @@ resolve_target() {
   local targets=()
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
+    [[ "$target" == "[Empty]" ]] && continue
     targets+=("$target")
   done < <("$HDC_BIN" list targets 2>/dev/null || true)
 
@@ -88,6 +91,26 @@ run_hdc() {
   "$HDC_BIN" -t "$target" "$@"
 }
 
+escape_ere() {
+  printf '%s' "$1" | sed -e 's/[][(){}.^$+*?|\\]/\\&/g'
+}
+
+escape_ere_union() {
+  local input="$1"
+  local pattern=""
+  local part
+  local IFS='|'
+  read -r -a parts <<<"$input"
+  for part in "${parts[@]}"; do
+    [[ -n "$part" ]] || continue
+    if [[ -n "$pattern" ]]; then
+      pattern+="|"
+    fi
+    pattern+="$(escape_ere "$part")"
+  done
+  printf '%s' "$pattern"
+}
+
 main() {
   if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     usage
@@ -101,6 +124,7 @@ main() {
   local target_bundle="${TARGET_BUNDLE:-${1:-$DEFAULT_TARGET_BUNDLE}}"
   local target_ability="${TARGET_ABILITY:-${2:-$DEFAULT_TARGET_ABILITY}}"
   local mission_grep="${MISSION_GREP:-$target_bundle}"
+  local shell_assistant_bundle="${SHELL_ASSISTANT_BUNDLE:-$DEFAULT_SHELL_ASSISTANT_BUNDLE}"
   local flclash_bundle="${FLCLASH_BUNDLE:-$DEFAULT_FLCLASH_BUNDLE}"
   local flclash_ability="${FLCLASH_ABILITY:-$DEFAULT_FLCLASH_ABILITY}"
   local vpn_toggle_x="${VPN_TOGGLE_X:-$DEFAULT_VPN_TOGGLE_X}"
@@ -113,8 +137,16 @@ main() {
   mkdir -p "$out_dir"
 
   if [[ "$mission_grep" == "$target_bundle" ]]; then
-    mission_grep="$target_bundle|${target_bundle/.hmos/}"
+    local compat_alias="${target_bundle/.hmos/}"
+    if [[ "$compat_alias" != "$target_bundle" ]]; then
+      mission_grep="$target_bundle|$compat_alias"
+    fi
   fi
+  local mission_grep_pattern
+  mission_grep_pattern=$(escape_ere_union "$mission_grep")
+  local shell_assistant_bundle_pattern
+  shell_assistant_bundle_pattern=$(escape_ere "$shell_assistant_bundle")
+  local compat_log_pattern="app: ${shell_assistant_bundle_pattern} success|responseCode=200|statusCode: 200|dnsFromNetsys|dnsServerReturnNothing|Couldn.t resolve host name|StartTun result ok=1|OHOSVPN|ProcUpdateVpnRoutePolicy"
 
   [[ -f "$KEEP_AWAKE_SCRIPT" ]] || fail "Missing keep-awake script: $KEEP_AWAKE_SCRIPT"
   [[ -f "$UI_SCRIPT" ]] || fail "Missing UI script: $UI_SCRIPT"
@@ -131,12 +163,13 @@ main() {
     echo "target_bundle=$target_bundle"
     echo "target_ability=$target_ability"
     echo "mission_grep=$mission_grep"
+    echo "shell_assistant_bundle=$shell_assistant_bundle"
     echo "flclash_bundle=$flclash_bundle"
     echo "flclash_ability=$flclash_ability"
     echo
 
     echo "=== cold stop + clear ==="
-    run_hdc "$target" shell "aa force-stop $target_bundle >/dev/null 2>&1 || true; aa force-stop $flclash_bundle >/dev/null 2>&1 || true; aa force-stop com.huawei.shell_assistant >/dev/null 2>&1 || true; hilog -r"
+    run_hdc "$target" shell "aa force-stop $target_bundle >/dev/null 2>&1 || true; aa force-stop $flclash_bundle >/dev/null 2>&1 || true; aa force-stop $shell_assistant_bundle >/dev/null 2>&1 || true; hilog -r"
     echo
 
     echo "=== launch FlClash ==="
@@ -168,11 +201,11 @@ main() {
     echo
 
     echo "=== mission dump ==="
-    run_hdc "$target" shell "aa dump -a | grep -n -A8 -B2 '$mission_grep\\|com.huawei.shell_assistant'"
+    run_hdc "$target" shell "aa dump -a | grep -n -A8 -B2 '$mission_grep_pattern|$shell_assistant_bundle_pattern' || true"
     echo
 
     echo "=== key logs ==="
-    run_hdc "$target" shell "hilog -x | grep -E 'app: com.huawei.shell_assistant success|responseCode=200|statusCode: 200|dnsFromNetsys|dnsServerReturnNothing|Couldn.t resolve host name|StartTun result ok=1|OHOSVPN|ProcUpdateVpnRoutePolicy' | tail -n 160"
+    run_hdc "$target" shell "hilog -x | grep -E '$compat_log_pattern' | tail -n 160 || true"
   } | tee "$log_file"
 
   echo

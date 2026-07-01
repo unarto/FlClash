@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/plugins/app.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -13,6 +14,7 @@ class AppPath {
   Completer<Directory> tempDir = Completer();
   Completer<Directory> cacheDir = Completer();
   Completer<String> bundleCodeDir = Completer();
+  Future<void>? _initOhosPathsFuture;
   late String appDirPath;
   String ohosBundleCodeDirPath = '';
   String ohosCodeDirPath = '';
@@ -42,6 +44,16 @@ class AppPath {
   factory AppPath() {
     _instance ??= AppPath._internal();
     return _instance!;
+  }
+
+  @visibleForTesting
+  AppPath.testOhos() {
+    appDirPath = '';
+  }
+
+  @visibleForTesting
+  static void resetInstance() {
+    _instance = null;
   }
 
   String get executableExtension {
@@ -240,10 +252,32 @@ class AppPath {
     if (!system.isOhos || dataDir.isCompleted) {
       return;
     }
+    final pending = _initOhosPathsFuture;
+    if (pending != null) {
+      return pending;
+    }
+    final future = _loadOhosPaths();
+    _initOhosPathsFuture = future;
+    try {
+      await future;
+    } catch (_) {
+      if (!dataDir.isCompleted) {
+        _initOhosPathsFuture = null;
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _loadOhosPaths() async {
     final paths = await app?.getAppPaths();
     if (paths == null) {
       throw StateError('Failed to fetch OHOS app paths');
     }
+    applyOhosAppPaths(paths);
+  }
+
+  @visibleForTesting
+  Future<void> applyOhosAppPaths(Map<String, String> paths) async {
     final filesDirPath = paths['filesDir'];
     final tempDirPath = paths['tempDir'];
     final cacheDirPath = paths['cacheDir'];
@@ -258,26 +292,38 @@ class AppPath {
         nativeLibraryDirPath == null) {
       throw StateError('Incomplete OHOS app paths: $paths');
     }
-    commonPrint.log(
-      '[BOOT] initOhosPaths files=$filesDirPath temp=$tempDirPath cache=$cacheDirPath bundle=$bundleCodeDirPath code=$codeDirPath nativeLib=$nativeLibraryDirPath',
-    );
     final filesDir = Directory(filesDirPath);
-    final tempDir = Directory(tempDirPath);
-    final cacheDir = Directory(cacheDirPath);
+    final tempDirectory = Directory(tempDirPath);
+    final cacheDirectory = Directory(cacheDirPath);
     final downloadsDir = Directory(join(filesDirPath, 'Downloads'));
     await filesDir.create(recursive: true);
-    await tempDir.create(recursive: true);
-    await cacheDir.create(recursive: true);
+    await tempDirectory.create(recursive: true);
+    await cacheDirectory.create(recursive: true);
     await downloadsDir.create(recursive: true);
     appDirPath = filesDirPath;
     ohosBundleCodeDirPath = bundleCodeDirPath;
     ohosCodeDirPath = codeDirPath;
     ohosNativeLibraryDirPath = nativeLibraryDirPath;
-    dataDir.complete(filesDir);
-    this.tempDir.complete(tempDir);
-    downloadDir.complete(downloadsDir);
-    this.cacheDir.complete(cacheDir);
-    bundleCodeDir.complete(bundleCodeDirPath);
+    _completeDirectoryIfPending(dataDir, filesDir);
+    _completeDirectoryIfPending(tempDir, tempDirectory);
+    _completeDirectoryIfPending(downloadDir, downloadsDir);
+    _completeDirectoryIfPending(cacheDir, cacheDirectory);
+    _completeStringIfPending(bundleCodeDir, bundleCodeDirPath);
+  }
+
+  void _completeDirectoryIfPending(
+    Completer<Directory> completer,
+    Directory value,
+  ) {
+    if (!completer.isCompleted) {
+      completer.complete(value);
+    }
+  }
+
+  void _completeStringIfPending(Completer<String> completer, String value) {
+    if (!completer.isCompleted) {
+      completer.complete(value);
+    }
   }
 }
 

@@ -15,12 +15,17 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
 var (
 	conn             io.ReadWriteCloser
 	connMu           sync.Mutex
+	writeMu          sync.Mutex
 	coreDebugLogPath string
+	dialServer       = dial
+
+	detachedServerGeneration atomic.Uint64
 )
 
 func debugCoreLog(format string, args ...interface{}) {
@@ -60,34 +65,67 @@ func readFrame(r io.Reader) ([]byte, error) {
 }
 
 func send(data []byte) {
-	if conn == nil {
+	connMu.Lock()
+	currentConn := conn
+	connMu.Unlock()
+	if currentConn == nil {
 		debugCoreLog("send conn nil")
 		return
 	}
-	connMu.Lock()
-	defer connMu.Unlock()
-	if err := writeFrame(conn, data); err != nil {
+	// Serialize frame writes with writeMu instead of connMu so that a stalled
+	// Write cannot block stopServer from swapping conn out and closing the fd
+	// (which is what unblocks the stalled Write).
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	if err := writeFrame(currentConn, data); err != nil {
 		debugCoreLog("server write error: %v", err)
 	}
 }
 
-func startServer(socketPath string) {
-	var err error
-	debugCoreLog("startServer dial begin address=%s", socketPath)
-	conn, err = dial(socketPath)
-	if err != nil {
-		debugCoreLog("startServer dial failed address=%s err=%v", socketPath, err)
-		panic(err.Error())
+func stopServer() {
+	connMu.Lock()
+	currentConn := conn
+	conn = nil
+	connMu.Unlock()
+	if currentConn != nil {
+		_ = currentConn.Close()
 	}
-	debugCoreLog("startServer dial connected address=%s", socketPath)
+}
 
-	defer func(conn io.Closer) {
+// stopConnection tears down currentConn, but only clears the global conn if it
+// still points at currentConn. This keeps a stale connection's teardown from
+// closing a newer connection installed by a concurrent restart.
+func stopConnection(currentConn io.ReadWriteCloser) {
+	connMu.Lock()
+	if conn == currentConn {
+		conn = nil
+	}
+	connMu.Unlock()
+	_ = currentConn.Close()
+}
+
+func serveConnection(currentConn io.ReadWriteCloser, generation uint64) {
+	connMu.Lock()
+	if detachedServerGeneration.Load() != generation {
+		connMu.Unlock()
+		debugCoreLog(
+			"startServer stale before serve generation=%d current=%d",
+			generation,
+			detachedServerGeneration.Load(),
+		)
+		_ = currentConn.Close()
+		return
+	}
+	conn = currentConn
+	connMu.Unlock()
+
+	defer func() {
 		debugCoreLog("startServer closing connection")
-		_ = conn.Close()
-	}(conn)
+		stopConnection(currentConn)
+	}()
 
 	for {
-		data, err := readFrame(conn)
+		data, err := readFrame(currentConn)
 		if err != nil {
 			if err != io.EOF {
 				debugCoreLog("startServer read error err=%v", err)
@@ -107,6 +145,18 @@ func startServer(socketPath string) {
 		}
 		go handleAction(action, result)
 	}
+}
+
+func startServer(socketPath string) {
+	generation := detachedServerGeneration.Add(1)
+	debugCoreLog("startServer dial begin address=%s", socketPath)
+	currentConn, err := dialServer(socketPath)
+	if err != nil {
+		debugCoreLog("startServer dial failed address=%s err=%v", socketPath, err)
+		panic(err.Error())
+	}
+	debugCoreLog("startServer dial connected address=%s", socketPath)
+	serveConnection(currentConn, generation)
 }
 
 func prepareServerProcess(socketPathChar, logPathChar *C.char) (string, string) {
@@ -130,7 +180,8 @@ func startServerProcess(socketPathChar, logPathChar *C.char) {
 func startServerProcessDetached(socketPathChar, logPathChar *C.char) {
 	socketPath, logPath := prepareServerProcess(socketPathChar, logPathChar)
 	debugCoreLog("startServerProcessDetached socket=%s", socketPath)
-	go func(socketPath, logPath string) {
+	generation := detachedServerGeneration.Add(1)
+	go func(socketPath, logPath string, generation uint64) {
 		coreDebugLogPath = logPath
 		defer func() {
 			if recoverValue := recover(); recoverValue != nil {
@@ -141,6 +192,27 @@ func startServerProcessDetached(socketPathChar, logPathChar *C.char) {
 				)
 			}
 		}()
-		startServer(socketPath)
-	}(socketPath, logPath)
+		debugCoreLog("startServer dial begin address=%s generation=%d", socketPath, generation)
+		currentConn, err := dialServer(socketPath)
+		if err != nil {
+			debugCoreLog(
+				"startServer dial failed address=%s generation=%d err=%v",
+				socketPath,
+				generation,
+				err,
+			)
+			panic(err.Error())
+		}
+		debugCoreLog("startServer dial connected address=%s generation=%d", socketPath, generation)
+		// serveConnection re-checks the generation under connMu before installing
+		// the connection, closing the TOCTOU window against stopServerProcessDetached.
+		serveConnection(currentConn, generation)
+	}(socketPath, logPath, generation)
+}
+
+//export stopServerProcessDetached
+func stopServerProcessDetached() {
+	debugCoreLog("stopServerProcessDetached")
+	detachedServerGeneration.Add(1)
+	stopServer()
 }

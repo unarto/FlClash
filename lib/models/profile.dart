@@ -6,7 +6,6 @@ import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:flutter/foundation.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
-import 'package:path/path.dart' show join;
 
 import 'clash_config.dart';
 
@@ -152,11 +151,6 @@ extension ProfilesExt on List<Profile> {
 }
 
 extension ProfileExtension on Profile {
-  static final RegExp _emptyCertificateFieldLinePattern = RegExp(
-    r'(^|\n)([ \t]*)(certificate|private-key)\s*:\s*(?:#.*)?(?=\n|$)',
-    multiLine: true,
-  );
-
   static String _expandIndentedBlock(String indent, String block) {
     return block.split('\n').map((line) => '$indent$line').join('\n');
   }
@@ -767,143 +761,26 @@ $openVpnTlsCryptBytes
   }
 
   Future<Profile> saveFile(Uint8List bytes) async {
-    final rawBytes = bytes;
     bytes = normalizeImportedConfigBytes(bytes);
-    try {
-      final rawText = String.fromCharCodes(rawBytes);
-      final normalizedText = String.fromCharCodes(bytes);
-      final lines = normalizedText.split('\n');
-      final preview = lines.take(12).join(r'\n');
-      commonPrint.log('[profile-save] preview id=$id text=$preview');
-      final rawEmptyFields = _extractEmptyCertificateFieldSnippetsForLog(
-        rawText,
-      );
-      if (rawEmptyFields.isNotEmpty) {
-        commonPrint.log(
-          '[profile-save] raw empty certificate fields id=$id text=${rawEmptyFields.join(r"\n---\n")}',
-        );
-      }
-      final normalizedEmptyFields = _extractEmptyCertificateFieldSnippetsForLog(
-        normalizedText,
-      );
-      if (normalizedEmptyFields.isNotEmpty) {
-        commonPrint.log(
-          '[profile-save] normalized empty certificate fields id=$id text=${normalizedEmptyFields.join(r"\n---\n")}',
-        );
-      }
-      final markers = <String>[];
-      for (var i = 0; i < lines.length; i++) {
-        final line = lines[i];
-        if (line.contains('reality-opts') ||
-            line.contains('public-key') ||
-            line.contains('short-id') ||
-            line.contains('<ca>') ||
-            line.contains('ca:') ||
-            line.contains('support-x25519mlkem768') ||
-            line.contains('client-fingerprint')) {
-          markers.add('${i + 1}:$line');
-        }
-      }
-      if (markers.isNotEmpty) {
-        commonPrint.log(
-          '[profile-save] markers id=$id text=${markers.join(r'\n')}',
-        );
-      }
-      final suspiciousFields = _extractSuspiciousScalarBlockSnippetsForLog(
-        normalizedText,
-        {
-          'client-fingerprint',
-          'host',
-          'server',
-          'password',
-          'certificate',
-          'private-key',
-        },
-      );
-      if (suspiciousFields.isNotEmpty) {
-        commonPrint.log(
-          '[profile-save] suspicious scalar blocks id=$id text=${suspiciousFields.join(r"\n---\n")}',
-        );
-      }
-    } catch (_) {}
     final path = await appPath.coreSafeTempFilePath;
     final tempFile = File(path);
-    commonPrint.log(
-      '[profile-save] start id=$id temp=$path bytes=${bytes.length}',
-    );
     await tempFile.safeWriteAsBytes(bytes);
     var message = await coreController.validateConfig(path);
-    commonPrint.log('[profile-save] validate result id=$id message=$message');
     if (message.isNotEmpty) {
       final converted = await coreController.convertSubscription(
         String.fromCharCodes(bytes),
       );
-      commonPrint.log(
-        '[profile-save] convert result id=$id length=${converted.length}',
-      );
       if (converted.isNotEmpty) {
         await tempFile.safeWriteAsString(converted);
         message = await coreController.validateConfig(path);
-        commonPrint.log(
-          '[profile-save] revalidate result id=$id message=$message',
-        );
       }
     }
     if (message.isNotEmpty) {
-      try {
-        final proxyIndexMatch = RegExp(r'proxy\s+(\d+):').firstMatch(message);
-        final proxyIndex = int.tryParse(proxyIndexMatch?.group(1) ?? '');
-        if (proxyIndex != null) {
-          final normalizedText = String.fromCharCodes(bytes);
-          final proxyCount = _countProxyEntriesForLog(normalizedText);
-          commonPrint.log(
-            '[profile-save] fail proxy count id=$id count=$proxyCount requestedIndex=$proxyIndex',
-          );
-          final proxyBlock = _extractProxyBlockForLog(
-            normalizedText,
-            proxyIndex,
-          );
-          if (proxyBlock.isNotEmpty) {
-            commonPrint.log(
-              '[profile-save] fail proxy block id=$id index=$proxyIndex text=$proxyBlock',
-            );
-            final neighborBlocks = _extractProxyNeighborBlocksForLog(
-              normalizedText,
-              proxyIndex,
-            );
-            if (neighborBlocks.isNotEmpty) {
-              commonPrint.log(
-                '[profile-save] fail proxy neighbors id=$id index=$proxyIndex text=$neighborBlocks',
-              );
-            }
-          } else {
-            final proxySection = _extractProxySectionForLog(normalizedText);
-            commonPrint.log(
-              '[profile-save] fail proxy block missing id=$id index=$proxyIndex section=$proxySection',
-            );
-          }
-        }
-      } catch (error) {
-        commonPrint.log('[profile-save] fail proxy block error=$error');
-      }
-      try {
-        final debugDumpPath = join(
-          await appPath.homeDirPath,
-          'debug-last-profile-save-fail.yaml',
-        );
-        await File(debugDumpPath).safeWriteAsBytes(bytes);
-        commonPrint.log('[profile-save] fail dump path=$debugDumpPath');
-      } catch (error) {
-        commonPrint.log('[profile-save] fail dump error=$error');
-      }
-      commonPrint.log('[profile-save] fail id=$id message=$message');
       throw message;
     }
     final mFile = await file;
-    commonPrint.log('[profile-save] copy begin id=$id target=${mFile.path}');
     await tempFile.copy(mFile.path);
     await tempFile.safeDelete();
-    commonPrint.log('[profile-save] success id=$id target=${mFile.path}');
     return copyWith(lastUpdateDate: DateTime.now());
   }
 
@@ -916,167 +793,4 @@ $openVpnTlsCryptBytes
     await File(path).copy(mFile.path);
     return copyWith(lastUpdateDate: DateTime.now());
   }
-}
-
-List<String> _extractEmptyCertificateFieldSnippetsForLog(String text) {
-  final normalized = _normalizeTextForLogExtraction(text);
-  final matches = ProfileExtension._emptyCertificateFieldLinePattern
-      .allMatches(normalized)
-      .toList();
-  if (matches.isEmpty) {
-    return const [];
-  }
-  final lines = normalized.split('\n');
-  final snippets = <String>[];
-  for (final match in matches.take(8)) {
-    final matchedLine = (match.group(0) ?? '').replaceFirst('\n', '');
-    final lineIndex = lines.indexWhere((line) => line == matchedLine);
-    if (lineIndex == -1) {
-      snippets.add(_escapeLogText(matchedLine));
-      continue;
-    }
-    final start = lineIndex > 0 ? lineIndex - 1 : lineIndex;
-    final end = lineIndex + 1 < lines.length ? lineIndex + 1 : lineIndex;
-    snippets.add(_escapeLogText(lines.sublist(start, end + 1).join('\n')));
-  }
-  return snippets;
-}
-
-List<String> _extractSuspiciousScalarBlockSnippetsForLog(
-  String text,
-  Set<String> keys,
-) {
-  final normalized = _normalizeTextForLogExtraction(text);
-  final lines = normalized.split('\n');
-  final snippets = <String>[];
-  final pattern = RegExp(r'^([ \t]*)([^:#]+)\s*:\s*$');
-  for (var i = 0; i < lines.length; i++) {
-    final match = pattern.firstMatch(lines[i]);
-    if (match == null) {
-      continue;
-    }
-    final key = (match.group(2) ?? '').trim();
-    if (!keys.contains(key)) {
-      continue;
-    }
-    final start = i > 0 ? i - 1 : i;
-    final end = i + 2 < lines.length ? i + 2 : lines.length - 1;
-    snippets.add(_escapeLogText(lines.sublist(start, end + 1).join('\n')));
-  }
-  return snippets.take(20).toList();
-}
-
-String _normalizeTextForLogExtraction(String text) {
-  return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-}
-
-int _leadingWhitespaceCountForLog(String line) {
-  var count = 0;
-  while (count < line.length) {
-    final char = line.codeUnitAt(count);
-    if (char != 0x20 && char != 0x09) {
-      break;
-    }
-    count++;
-  }
-  return count;
-}
-
-int? _findProxySectionEndLine(List<String> lines, int startLineIndex) {
-  for (var i = startLineIndex + 1; i < lines.length; i++) {
-    final line = lines[i];
-    if (line.trim().isEmpty) {
-      continue;
-    }
-    if (_leadingWhitespaceCountForLog(line) == 0) {
-      return i;
-    }
-  }
-  return null;
-}
-
-List<String> _extractProxyEntriesForLog(String text) {
-  final normalized = _normalizeTextForLogExtraction(text);
-  final lines = normalized.split('\n');
-  final proxyHeaderLineIndex = lines.indexWhere(
-    (line) => RegExp(r'^[ \t]*proxies\s*:\s*(?:#.*)?$').hasMatch(line),
-  );
-  if (proxyHeaderLineIndex == -1) {
-    return const [];
-  }
-  final sectionEndLineIndex = _findProxySectionEndLine(
-    lines,
-    proxyHeaderLineIndex,
-  );
-  final sectionLines = lines.sublist(
-    proxyHeaderLineIndex + 1,
-    sectionEndLineIndex ?? lines.length,
-  );
-  final entries = <String>[];
-  final buffer = <String>[];
-  for (final line in sectionLines) {
-    if (RegExp(r'^[ \t]{2,}- ').hasMatch(line)) {
-      if (buffer.isNotEmpty) {
-        entries.add(buffer.join('\n').trimRight());
-        buffer.clear();
-      }
-    }
-    if (buffer.isNotEmpty || line.trim().isNotEmpty) {
-      buffer.add(line);
-    }
-  }
-  if (buffer.isNotEmpty) {
-    entries.add(buffer.join('\n').trimRight());
-  }
-  return entries;
-}
-
-String _escapeLogText(String text) {
-  return text.trim().replaceAll('\n', r'\n');
-}
-
-String _extractProxyBlockForLog(String text, int proxyIndex) {
-  final entries = _extractProxyEntriesForLog(text);
-  if (proxyIndex <= 0 || proxyIndex > entries.length) {
-    return '';
-  }
-  return _escapeLogText(entries[proxyIndex - 1]);
-}
-
-String _extractProxyNeighborBlocksForLog(String text, int proxyIndex) {
-  final entries = _extractProxyEntriesForLog(text);
-  if (entries.isEmpty || proxyIndex <= 0 || proxyIndex > entries.length) {
-    return '';
-  }
-  final start = proxyIndex > 1 ? proxyIndex - 1 : proxyIndex;
-  final end = proxyIndex < entries.length ? proxyIndex + 1 : proxyIndex;
-  final output = <String>[];
-  for (var i = start; i <= end; i++) {
-    output.add('[$i] ${_escapeLogText(entries[i - 1])}');
-  }
-  return output.join(r'\n---\n');
-}
-
-int _countProxyEntriesForLog(String text) {
-  return _extractProxyEntriesForLog(text).length;
-}
-
-String _extractProxySectionForLog(String text) {
-  final normalized = _normalizeTextForLogExtraction(text);
-  final lines = normalized.split('\n');
-  final proxyHeaderLineIndex = lines.indexWhere(
-    (line) => RegExp(r'^[ \t]*proxies\s*:\s*(?:#.*)?$').hasMatch(line),
-  );
-  if (proxyHeaderLineIndex == -1) {
-    return '';
-  }
-  final sectionEndLineIndex = _findProxySectionEndLine(
-    lines,
-    proxyHeaderLineIndex,
-  );
-  final sectionLines = lines.sublist(
-    proxyHeaderLineIndex,
-    sectionEndLineIndex ?? lines.length,
-  );
-  return sectionLines.take(120).join(r'\n');
 }

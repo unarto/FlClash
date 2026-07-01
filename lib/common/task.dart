@@ -75,25 +75,6 @@ Future<List<Group>> _toGroupsTask(ComputeGroupsState state) async {
         return group;
       })
       .toList();
-  if (groupsRaw.isNotEmpty) {
-    final groupSummaries = groupsRaw
-        .map((group) {
-          final name = group['name'] ?? '';
-          final items = (group['all'] as List?) ?? const [];
-          final sample = items
-              .take(5)
-              .map((item) => (item as Map?)?['name']?.toString() ?? '')
-              .where((item) => item.isNotEmpty)
-              .join('|');
-          return '$name:${items.length}[$sample]';
-        })
-        .join('; ');
-    commonPrint.log('[proxy-debug] toGroupsTask rawGroups $groupSummaries');
-  } else {
-    commonPrint.log(
-      '[proxy-debug] toGroupsTask rawGroups empty all=${all.length} keys=${proxies.length}',
-    );
-  }
   final groups = groupsRaw.map((e) => Group.fromJson(e)).toList();
   return computeSort(
     groups: groups,
@@ -749,7 +730,6 @@ Future<String> _backupTask(
   BackgroundIsolateBinaryMessenger.ensureInitialized(token);
   final configMap = Map<String, dynamic>.from(params['configMap'] as Map);
   final fileNames = (params['fileNames'] as List).cast<String>();
-  commonPrint.log('[backup-task] start files=${fileNames.length}');
   final dbPath = params['dbPath'] as String;
   final configStr = json.encode(configMap);
   final profilesDir = Directory(params['profilesPath'] as String);
@@ -762,12 +742,8 @@ Future<String> _backupTask(
     await dbFile.copy(tempDBFile.path);
   }
   final encoder = ZipFileEncoder();
-  commonPrint.log('[backup-task] create zip path=$tempZipFilePath');
   encoder.create(tempZipFilePath);
   await tempConfigFile.writeAsString(configStr);
-  commonPrint.log(
-    '[backup-task] config file path=${tempConfigFile.path} size=${await tempConfigFile.length()}',
-  );
   await encoder.addFile(tempDBFile, backupDatabaseName);
   await encoder.addFile(tempConfigFile, configJsonName);
   if (await profilesDir.exists()) {
@@ -793,22 +769,8 @@ Future<String> _backupTask(
     );
   }
   encoder.close();
-  commonPrint.log('[backup-task] zip completed path=$tempZipFilePath');
-  try {
-    final backupBytes = await File(tempZipFilePath).readAsBytes();
-    final backupArchive = ZipDecoder().decodeBytes(backupBytes);
-    final backupEntries = backupArchive.files
-        .map((item) => '${item.name}:${item.isFile ? 'file' : 'dir'}')
-        .join(', ');
-    commonPrint.log(
-      '[zip-verify] backup archive entries=${backupArchive.files.length} [$backupEntries]',
-    );
-  } catch (error) {
-    commonPrint.log('[zip-verify] backup archive inspect failed: $error');
-  }
   await tempConfigFile.safeDelete();
   await tempDBFile.safeDelete();
-  commonPrint.log('[backup-task] cleanup done path=$tempZipFilePath');
   return tempZipFilePath;
 }
 
@@ -833,21 +795,13 @@ Future<MigrationData> _restoreTask(
   final backupFilePath = params['backupFilePath']!;
   final restoreDirPath = params['restoreDirPath']!;
   final homeDirPath = params['homeDirPath']!;
-  commonPrint.log('[restore-task] start backupFilePath=$backupFilePath');
   final zipDecoder = ZipDecoder();
   final input = InputFileStream(backupFilePath);
-  commonPrint.log('[restore-task] input stream opened');
   final archive = zipDecoder.decodeStream(input);
-  commonPrint.log(
-    '[restore-task] archive decoded files=${archive.files.length}',
-  );
   final dir = Directory(restoreDirPath);
   await dir.create(recursive: true);
   for (final file in archive.files) {
     final normalizedPath = posix.normalize(file.name);
-    commonPrint.log(
-      '[restore-task] entry raw=${file.name} normalized=$normalizedPath isFile=${file.isFile}',
-    );
     if (normalizedPath.isEmpty ||
         normalizedPath == '.' ||
         normalizedPath == '..') {
@@ -864,10 +818,8 @@ Future<MigrationData> _restoreTask(
     await Directory(outPath).create(recursive: true);
   }
   await input.close();
-  commonPrint.log('[restore-task] archive extracted dir=$restoreDirPath');
   final restoreConfigFile = File(join(restoreDirPath, configJsonName));
   if (!await restoreConfigFile.exists()) {
-    commonPrint.log('[restore-task] missing restore config file');
     throw StateError('invalid backup file');
   }
   final restoreConfigMap =
@@ -883,9 +835,6 @@ Future<MigrationData> _restoreTask(
   }
   final backupDatabaseFile = File(join(restoreDirPath, backupDatabaseName));
   if (!await backupDatabaseFile.exists()) {
-    commonPrint.log(
-      '[restore-task] no backup database file, returning config only',
-    );
     return migrationData;
   }
   if (system.isOhos) {
@@ -923,7 +872,6 @@ Future<MigrationData> _restoreTask(
     proxyGroups: results[4].cast<ProxyGroup>(),
   );
   await database.close();
-  commonPrint.log('[restore-task] database migration completed');
   return migrationData;
 }
 

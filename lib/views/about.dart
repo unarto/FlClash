@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:fl_clash/common/common.dart';
-import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
@@ -33,7 +32,6 @@ class AboutView extends StatelessWidget {
     if (!system.isOhos) {
       return;
     }
-    commonPrint.log('[ohos-qr] about importQrTestImage start');
     try {
       final bytes = await rootBundle.load('assets/images/jisu_qr_test.png');
       final path = '${await appPath.tempPath}/jisu_qr_test.png';
@@ -45,17 +43,10 @@ class AboutView extends StatelessWidget {
       final imported = prepared == null
           ? null
           : await app?.importImageToGallery(prepared, title: 'flclash_qr_test');
-      commonPrint.log(
-        '[ohos-qr] about importQrTestImage path=$path prepared=$prepared imported=$imported',
-      );
       if (context.mounted) {
         context.showNotifier(imported == null ? '导入图库失败' : '已导入图库');
       }
-    } catch (error, stackTrace) {
-      commonPrint.log(
-        '[ohos-qr] about importQrTestImage error=$error stack=$stackTrace',
-        logLevel: LogLevel.error,
-      );
+    } catch (_) {
       if (context.mounted) {
         context.showNotifier('导入图库失败');
       }

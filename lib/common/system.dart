@@ -12,6 +12,23 @@ import 'package:fl_clash/widgets/input.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart';
 
+const _defaultOhosAppVersion = '0.8.93';
+const _defaultOhosAppBuildNumber = '2026052901';
+
+String resolveOhosBuildValue({
+  required String appValue,
+  required String flutterValue,
+  required String fallbackValue,
+}) {
+  if (appValue.isNotEmpty) {
+    return appValue;
+  }
+  if (flutterValue.isNotEmpty) {
+    return flutterValue;
+  }
+  return fallbackValue;
+}
+
 class System {
   static System? _instance;
 
@@ -53,11 +70,21 @@ class System {
 
   Future<PackageInfo> getPackageInfo() async {
     if (isOhos) {
+      final version = resolveOhosBuildValue(
+        appValue: const String.fromEnvironment('APP_VERSION'),
+        flutterValue: const String.fromEnvironment('FLUTTER_BUILD_NAME'),
+        fallbackValue: _defaultOhosAppVersion,
+      );
+      final buildNumber = resolveOhosBuildValue(
+        appValue: const String.fromEnvironment('APP_BUILD_NUMBER'),
+        flutterValue: const String.fromEnvironment('FLUTTER_BUILD_NUMBER'),
+        fallbackValue: _defaultOhosAppBuildNumber,
+      );
       return PackageInfo(
         appName: appName,
         packageName: packageName,
-        version: '0.8.93',
-        buildNumber: '2026052901',
+        version: version,
+        buildNumber: buildNumber,
       );
     }
     return PackageInfo.fromPlatform();

@@ -73,18 +73,6 @@ class Providers extends _$Providers with AutoDisposeNotifierMixin {
 
   Future<void> syncProviders() async {
     final providers = await coreController.getExternalProviders();
-    for (final provider in providers) {
-      if (provider.type == 'Proxy' &&
-          provider.vehicleType == 'HTTP' &&
-          provider.count == 0) {
-        commonPrint.log(
-          '[proxy-debug] empty provider '
-          '${provider.name} path=${provider.path ?? ''} '
-          'updatedAt=${provider.updateAt.toIso8601String()}',
-          logLevel: LogLevel.warning,
-        );
-      }
-    }
     value = providers;
   }
 }

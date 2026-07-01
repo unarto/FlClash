@@ -92,6 +92,7 @@ resolve_target() {
   local targets=()
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
+    [[ "$target" == "[Empty]" ]] && continue
     targets+=("$target")
   done < <("$HDC_BIN" list targets 2>/dev/null || true)
 

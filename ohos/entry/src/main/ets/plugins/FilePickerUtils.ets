@@ -5,6 +5,7 @@ import { Log } from '@ohos/flutter_ohos';
 
 import AppPlugin from './AppPlugin';
 import { decodePickedFileName, FilePickerInfo, FilePickerInfoBuilder } from './FilePickerInfo';
+import { stringifyError } from './error_utils';
 
 const TAG = 'FilePickerUtils';
 const READ_CHUNK_SIZE = 64 * 1024;
@@ -54,7 +55,7 @@ declare type OpenFileMethod = (uri: string, mode: string) => Promise<number>;
 
 function describeError(error: Object): string {
   const value = error as BusinessError;
-  return `code=${String(value.code)}, message=${String(value.message)}, raw=${String(error)}`;
+  return `code=${String(value.code)}, message=${String(value.message)}, raw=${stringifyError(error)}`;
 }
 
 export class FilePickerUtils {
@@ -72,7 +73,9 @@ export class FilePickerUtils {
     ];
     for (const candidate of candidates) {
       try {
-        const probePath = `${candidate}/.write_probe`;
+        const cacheRoot = `${candidate}/file_picker`;
+        ensureDir(cacheRoot);
+        const probePath = `${cacheRoot}/.write_probe`;
         const probe = fs.openSync(
           probePath,
           fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE,
@@ -81,10 +84,12 @@ export class FilePickerUtils {
         try {
           fs.unlinkSync(probePath);
         } catch (_) {}
-        return candidate;
+        return cacheRoot;
       } catch (_) {}
     }
-    return context.filesDir;
+    const fallbackCacheRoot = `${context.filesDir}/file_picker`;
+    ensureDir(fallbackCacheRoot);
+    return fallbackCacheRoot;
   }
 
   static async prepareReadPermission(uri: string): Promise<void> {
@@ -154,9 +159,9 @@ export class FilePickerUtils {
         }
       } catch (error) {
         AppPlugin.setLastFilePickerState(
-          `read:translated-path-failed:path=${translatedPath}:error=${String(error)}`,
+          `read:translated-path-failed:path=${translatedPath}:error=${stringifyError(error)}`,
         );
-        errors.push(`translatedPath(${translatedPath}): ${String(error)}`);
+        errors.push(`translatedPath(${translatedPath}): ${stringifyError(error)}`);
       }
     }
 
@@ -173,8 +178,10 @@ export class FilePickerUtils {
         FilePickerUtils.copyFdToTarget(sourceFd, targetFd);
         return `context.openFile:${mode}`;
       } catch (error) {
-        AppPlugin.setLastFilePickerState(`read:context-openFile-failed:mode=${mode}:error=${String(error)}`);
-        errors.push(`context.openFile(${mode}): ${String(error)}`);
+        AppPlugin.setLastFilePickerState(
+          `read:context-openFile-failed:mode=${mode}:error=${stringifyError(error)}`,
+        );
+        errors.push(`context.openFile(${mode}): ${stringifyError(error)}`);
       } finally {
         if (sourceFd !== null) {
           try {
@@ -191,7 +198,7 @@ export class FilePickerUtils {
         FilePickerUtils.copyFdToTarget(source.fd, targetFd);
         return `openSync:${mode}`;
       } catch (error) {
-        errors.push(`openSync(${mode}): ${String(error)}`);
+        errors.push(`openSync(${mode}): ${stringifyError(error)}`);
       } finally {
         if (source) {
           fs.closeSync(source);
@@ -209,7 +216,7 @@ export class FilePickerUtils {
       expectedSize = Number(stat.size);
     } catch (error) {
       Log.e(TAG, `readBytes statSync failed: path=${path}, error=${describeError(error as Object)}`);
-      throw new Error(String(error));
+      throw new Error(stringifyError(error));
     }
     if (expectedSize <= 0) {
       return new Uint8Array();
@@ -220,7 +227,7 @@ export class FilePickerUtils {
       file = fs.openSync(path, fs.OpenMode.READ_ONLY);
     } catch (error) {
       Log.e(TAG, `readBytes openSync failed: path=${path}, error=${describeError(error as Object)}`);
-      throw new Error(String(error));
+      throw new Error(stringifyError(error));
     }
     try {
       const output = new Uint8Array(expectedSize);
@@ -254,6 +261,15 @@ export class FilePickerUtils {
     }
   }
 
+  private static clearCacheFiles(cacheRoot: string): void {
+    const fileNames = fs.listFileSync(cacheRoot);
+    for (const fileName of fileNames) {
+      try {
+        fs.unlinkSync(`${cacheRoot}/${fileName}`);
+      } catch (_) {}
+    }
+  }
+
   static async openFileStream(
     context: common.UIAbilityContext,
     uri: string,
@@ -280,7 +296,9 @@ export class FilePickerUtils {
         copiedFrom = FilePickerUtils.copyUriToPath(uri, tempTargetPath);
         AppPlugin.setLastFilePickerState(`read:copy-direct-success:uri=${uri}:target=${tempTargetPath}`);
       } catch (copyError) {
-        AppPlugin.setLastFilePickerState(`read:copy-direct-failed:uri=${uri}:error=${String(copyError)}`);
+        AppPlugin.setLastFilePickerState(
+          `read:copy-direct-failed:uri=${uri}:error=${stringifyError(copyError)}`,
+        );
         AppPlugin.setLastFilePickerState(`read:target-open-attempt:target=${tempTargetPath}`);
         try {
           target = fs.openSync(
@@ -289,9 +307,9 @@ export class FilePickerUtils {
           );
         } catch (targetOpenError) {
           AppPlugin.setLastFilePickerState(
-            `read:target-open-failed:target=${tempTargetPath}:error=${String(targetOpenError)}`,
+            `read:target-open-failed:target=${tempTargetPath}:error=${stringifyError(targetOpenError)}`,
           );
-          throw new Error(String(targetOpenError));
+          throw new Error(stringifyError(targetOpenError));
         }
         AppPlugin.setLastFilePickerState(`read:target-open-success:target=${tempTargetPath}`);
         copiedFrom = await FilePickerUtils.copySourceToTarget(
@@ -330,11 +348,11 @@ export class FilePickerUtils {
       return builder.build();
     } catch (error) {
       AppPlugin.setLastFilePickerState(
-        `read:error:uri=${uri}:copiedFrom=${copiedFrom}:error=${String(error)}`,
+        `read:error:uri=${uri}:copiedFrom=${copiedFrom}:error=${stringifyError(error)}`,
       );
       Log.e(
         TAG,
-        `openFileStream failed: uri=${uri}, copiedFrom=${copiedFrom}, originalName=${originalName}, decodedName=${decodedName}, error=${error}`,
+        `openFileStream failed: uri=${uri}, copiedFrom=${copiedFrom}, originalName=${originalName}, decodedName=${decodedName}, error=${stringifyError(error)}`,
       );
       return null;
     } finally {
@@ -347,12 +365,30 @@ export class FilePickerUtils {
   }
 
   static clearCache(context: common.UIAbilityContext): boolean {
-    const cacheRoot = `${context.cacheDir}/file_picker`;
+    const candidates: Array<string> = [
+      context.filesDir,
+      context.tempDir,
+      context.cacheDir,
+    ];
+    let hadCleanupFailure = false;
     try {
-      fs.rmdirSync(cacheRoot);
-      return true;
+      for (const candidate of candidates) {
+        const cacheRoot = `${candidate}/file_picker`;
+        try {
+          fs.accessSync(cacheRoot);
+        } catch (_) {
+          continue;
+        }
+        try {
+          FilePickerUtils.clearCacheFiles(cacheRoot);
+          fs.rmdirSync(cacheRoot);
+        } catch (_) {
+          hadCleanupFailure = true;
+        }
+      }
+      return !hadCleanupFailure;
     } catch (error) {
-      Log.e(TAG, `clearCache failed: ${error}`);
+      Log.e(TAG, `clearCache failed: ${stringifyError(error)}`);
       return false;
     }
   }

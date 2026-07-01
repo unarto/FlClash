@@ -12,6 +12,7 @@ DEVECO_HDC="/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/too
 DEFAULT_BROWSER_BUNDLE="com.huawei.hmos.browser"
 DEFAULT_BROWSER_ABILITY="MainAbility"
 DEFAULT_BROWSER_URI="https://www.youtube.com"
+DEFAULT_SHELL_ASSISTANT_BUNDLE="com.huawei.shell_assistant"
 DEFAULT_FLCLASH_BUNDLE="com.follow.clash"
 DEFAULT_FLCLASH_ABILITY="EntryAbility"
 DEFAULT_VPN_TOGGLE_X=1126
@@ -33,6 +34,7 @@ Environment:
   BROWSER_BUNDLE         Override browser bundle. Default: com.huawei.hmos.browser
   BROWSER_ABILITY        Override browser ability. Default: MainAbility
   BROWSER_URI            Override launch URI. Default: https://www.youtube.com
+  SHELL_ASSISTANT_BUNDLE Override browser host bundle. Default: com.huawei.shell_assistant
   FLCLASH_BUNDLE         Override FlClash bundle. Default: com.follow.clash
   FLCLASH_ABILITY        Override FlClash ability. Default: EntryAbility
   VPN_TOGGLE_X           Dashboard VPN button X coordinate. Default: 1126
@@ -46,7 +48,7 @@ Environment:
   OUT_DIR                Output directory for log artifacts. Default: .ohos_live
 
 What this verifies:
-  1. Force-stop FlClash, the browser, and com.huawei.shell_assistant, then clear browser-host app data.
+  1. Force-stop FlClash, the browser, and the browser host bundle, then clear browser-host app data.
   2. Launch FlClash and start the VPN from the dashboard.
   3. Launch the browser main ability, then submit the target URI inside the browser search page.
   4. Capture vpn-tun counters before and after browser traffic.
@@ -80,6 +82,7 @@ resolve_target() {
   local targets=()
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
+    [[ "$target" == "[Empty]" ]] && continue
     targets+=("$target")
   done < <("$HDC_BIN" list targets 2>/dev/null || true)
 
@@ -94,6 +97,24 @@ run_hdc() {
   local target="$1"
   shift
   "$HDC_BIN" -t "$target" "$@"
+}
+
+resolve_uri_host() {
+  local uri="$1"
+  node -e '
+const raw = process.argv[1] ?? "";
+if (!raw) {
+  process.exit(0);
+}
+try {
+  const normalized = raw.includes("://") ? raw : `https://${raw}`;
+  process.stdout.write(new URL(normalized).host);
+} catch (_) {}
+' "$uri"
+}
+
+escape_ere() {
+  printf '%s' "$1" | sed -e 's/[][(){}.^$+*?|\\]/\\&/g'
 }
 
 try_tap_browser_target() {
@@ -133,6 +154,23 @@ main() {
   local browser_bundle="${BROWSER_BUNDLE:-$DEFAULT_BROWSER_BUNDLE}"
   local browser_ability="${BROWSER_ABILITY:-$DEFAULT_BROWSER_ABILITY}"
   local browser_uri="${BROWSER_URI:-$DEFAULT_BROWSER_URI}"
+  local browser_uri_host
+  browser_uri_host=$(resolve_uri_host "$browser_uri")
+  local browser_uri_probe="$browser_uri_host"
+  if [[ "$browser_uri_probe" == www.* ]]; then
+    browser_uri_probe="${browser_uri_probe#www.}"
+  fi
+  local shell_assistant_bundle="${SHELL_ASSISTANT_BUNDLE:-$DEFAULT_SHELL_ASSISTANT_BUNDLE}"
+  local browser_bundle_pattern
+  browser_bundle_pattern=$(escape_ere "$browser_bundle")
+  local browser_uri_host_pattern
+  browser_uri_host_pattern=$(escape_ere "$browser_uri_host")
+  local shell_assistant_bundle_pattern
+  shell_assistant_bundle_pattern=$(escape_ere "$shell_assistant_bundle")
+  local browser_uri_is_youtube=0
+  if [[ "$browser_uri_host" == *"youtube.com"* || "$browser_uri_host" == *"youtu.be"* ]]; then
+    browser_uri_is_youtube=1
+  fi
   local flclash_bundle="${FLCLASH_BUNDLE:-$DEFAULT_FLCLASH_BUNDLE}"
   local flclash_ability="${FLCLASH_ABILITY:-$DEFAULT_FLCLASH_ABILITY}"
   local vpn_toggle_x="${VPN_TOGGLE_X:-$DEFAULT_VPN_TOGGLE_X}"
@@ -154,6 +192,10 @@ main() {
   startup_log_pattern=$(node "$LOG_PATTERN_SCRIPT" startup)
   local browser_log_pattern
   browser_log_pattern=$(node "$LOG_PATTERN_SCRIPT" browser)
+  browser_log_pattern="${browser_log_pattern}|${browser_bundle_pattern}|${shell_assistant_bundle_pattern}"
+  if [[ -n "$browser_uri_host_pattern" ]]; then
+    browser_log_pattern="${browser_log_pattern}|${browser_uri_host_pattern}"
+  fi
 
   HDC_TARGET="$target" bash "$KEEP_AWAKE_SCRIPT" >/dev/null
 
@@ -170,12 +212,14 @@ main() {
     echo "browser_bundle=$browser_bundle"
     echo "browser_ability=$browser_ability"
     echo "browser_uri=$browser_uri"
+    echo "browser_uri_host=$browser_uri_host"
+    echo "shell_assistant_bundle=$shell_assistant_bundle"
     echo "flclash_bundle=$flclash_bundle"
     echo "flclash_ability=$flclash_ability"
     echo
 
     echo "=== cold stop + clear ==="
-    run_hdc "$target" shell "aa force-stop $browser_bundle >/dev/null 2>&1 || true; aa force-stop $flclash_bundle >/dev/null 2>&1 || true; aa force-stop com.huawei.shell_assistant >/dev/null 2>&1 || true; bm clean -n $browser_bundle -c >/dev/null 2>&1 || true; bm clean -n com.huawei.shell_assistant -c >/dev/null 2>&1 || true; hilog -r"
+    run_hdc "$target" shell "aa force-stop $browser_bundle >/dev/null 2>&1 || true; aa force-stop $flclash_bundle >/dev/null 2>&1 || true; aa force-stop $shell_assistant_bundle >/dev/null 2>&1 || true; bm clean -n $browser_bundle -c >/dev/null 2>&1 || true; bm clean -n $shell_assistant_bundle -c >/dev/null 2>&1 || true; hilog -r"
     echo
 
     echo "=== launch FlClash ==="
@@ -193,7 +237,7 @@ main() {
     echo
 
     echo "=== vpn startup diagnostic logs ==="
-    run_hdc "$target" shell "hilog -x | grep -E '$startup_log_pattern' | tail -n 320"
+    run_hdc "$target" shell "hilog -x | grep -E '$startup_log_pattern' | tail -n 320 || true"
     echo
 
     echo "=== launch browser ==="
@@ -230,7 +274,9 @@ main() {
       submit_action="search_btn_in_search"
     elif try_tap_browser_target "$target" "$browser_uri" exact; then
       submit_action="$browser_uri"
-    elif try_tap_browser_target "$target" "youtube.com" contains; then
+    elif [[ -n "$browser_uri_probe" ]] && try_tap_browser_target "$target" "$browser_uri_probe" contains; then
+      submit_action="$browser_uri_probe"
+    elif (( browser_uri_is_youtube )) && try_tap_browser_target "$target" "youtube.com" contains; then
       submit_action="youtube.com"
     else
       local browser_submit_point=""
@@ -266,9 +312,17 @@ main() {
     echo
 
     echo "=== browser text probes ==="
-    HDC_TARGET="$target" bash "$UI_SCRIPT" find-text "YouTube" contains || true
-    HDC_TARGET="$target" bash "$UI_SCRIPT" find-text "youtube.com" contains || true
-    HDC_TARGET="$target" bash "$UI_SCRIPT" find-text "m.youtube.com" contains || true
+    if [[ -n "$browser_uri_host" ]]; then
+      HDC_TARGET="$target" bash "$UI_SCRIPT" find-text "$browser_uri_host" contains || true
+    fi
+    if [[ -n "$browser_uri_probe" && "$browser_uri_probe" != "$browser_uri_host" ]]; then
+      HDC_TARGET="$target" bash "$UI_SCRIPT" find-text "$browser_uri_probe" contains || true
+    fi
+    if (( browser_uri_is_youtube )); then
+      HDC_TARGET="$target" bash "$UI_SCRIPT" find-text "YouTube" contains || true
+      HDC_TARGET="$target" bash "$UI_SCRIPT" find-text "youtube.com" contains || true
+      HDC_TARGET="$target" bash "$UI_SCRIPT" find-text "m.youtube.com" contains || true
+    fi
     sleep "$browser_interact_wait"
     echo
 
@@ -280,19 +334,19 @@ main() {
     echo
 
     echo "=== process list ==="
-    run_hdc "$target" shell "ps -A -o pid,uid,name | grep -E 'hmos.browser|aidispatch|shell_assistant' || true"
+    run_hdc "$target" shell "ps -A -o pid,uid,name | grep -E '$browser_bundle_pattern|com\.huawei\.hmos\.aidispatchservice|$shell_assistant_bundle_pattern' || true"
     echo
 
     echo "=== mission dump ==="
-    run_hdc "$target" shell "aa dump -a | grep -n -A8 -B2 '$browser_bundle\\|com.huawei.hmos.aidispatchservice\\|com.huawei.shell_assistant' || true"
+    run_hdc "$target" shell "aa dump -a | grep -n -A8 -B2 '$browser_bundle_pattern|com\.huawei\.hmos\.aidispatchservice|$shell_assistant_bundle_pattern' || true"
     echo
 
     echo "=== vpn setup logs ==="
-    run_hdc "$target" shell "hilog -x | grep -E '$startup_log_pattern' | tail -n 320"
+    run_hdc "$target" shell "hilog -x | grep -E '$startup_log_pattern' | tail -n 320 || true"
     echo
 
     echo "=== browser + flclash logs ==="
-    run_hdc "$target" shell "hilog -x | grep -E '$browser_log_pattern' | tail -n 520"
+    run_hdc "$target" shell "hilog -x | grep -E '$browser_log_pattern' | tail -n 520 || true"
   } | tee "$log_file"
 
   echo

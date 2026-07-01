@@ -7,6 +7,7 @@ import {
   buildOhosVpnRoutes,
   resolveOhosVpnApplicationLists,
 } from './vpn_config';
+import { stringifyError } from '../plugins/error_utils';
 
 interface NativeBridge {
   quickSetup(initParamsJson: string, setupParamsJson: string): string;
@@ -17,6 +18,7 @@ interface NativeBridge {
   stopTun(): boolean;
   lastError(): string;
   startEmbeddedCore(socketPath: string, logDirPath: string): number;
+  stopTrackedCore(): boolean;
 }
 
 const nativeBridge = loadNativeModule('libentry.so') as NativeBridge;
@@ -88,7 +90,7 @@ export default class FlClashVpnAbility extends VpnExtensionAbility {
           nativeBridge.completeProtectRequest(request.id, 0);
         } catch (error) {
           console.warn(
-            `[FlClashVpnAbility] protect fd=${request.fd} failed: ${JSON.stringify(error)}`,
+            `[FlClashVpnAbility] protect fd=${request.fd} failed: ${stringifyError(error)}`,
           );
           nativeBridge.completeProtectRequest(request.id, -1);
         }
@@ -103,7 +105,6 @@ export default class FlClashVpnAbility extends VpnExtensionAbility {
     writeVpnStatus(this.context.filesDir, 'starting');
     const stack = getStringParam(want, 'stack', 'mixed');
     const ipv6 = getBooleanParam(want, 'ipv6', false);
-    const allowBypass = getBooleanParam(want, 'allowBypass', true);
     const initParamsJson = getStringParam(want, 'initParamsJson', '');
     const setupParamsJson = getStringParam(want, 'setupParamsJson', '');
     const coreSocketPath = getStringParam(want, 'coreSocketPath', '');
@@ -128,6 +129,7 @@ export default class FlClashVpnAbility extends VpnExtensionAbility {
       ? `${IPV4_ADDRESS},${IPV6_ADDRESS}`
       : IPV4_ADDRESS;
     const vpnApplicationLists = resolveOhosVpnApplicationLists(BUNDLE_NAME);
+    let tunStarted = false;
 
     try {
       if (initParamsJson.length === 0 || setupParamsJson.length === 0) {
@@ -149,14 +151,13 @@ export default class FlClashVpnAbility extends VpnExtensionAbility {
         isIPv6Accepted: ipv6,
         isInternal: false,
         isBlocking: false,
-        trustedApplications: vpnApplicationLists.trustedApplications,
         blockedApplications: vpnApplicationLists.blockedApplications,
       });
       try {
         await this.vpnConnection.protectProcessNet();
       } catch (error) {
         console.warn(
-          `[FlClashVpnAbility] protectProcessNet failed: ${JSON.stringify(error)}`,
+          `[FlClashVpnAbility] protectProcessNet failed: ${stringifyError(error)}`,
         );
       }
       void this.pumpProtectRequests(protectLoopToken);
@@ -169,62 +170,127 @@ export default class FlClashVpnAbility extends VpnExtensionAbility {
       if (!started) {
         throw new Error(`startTun failed: ${nativeBridge.lastError()}`);
       }
+      tunStarted = true;
       // Link the main app UI to THIS (traffic-serving) core: the embedded core
       // dials the main app's CoreService socket in-process, so the same core
       // that runs the tun also answers UI queries and pushes live events.
-      // Non-fatal: the VPN keeps working even if the link cannot be set up.
+      // This link is part of a successful OHOS VPN start: without it the UI
+      // cannot observe the traffic-serving core (status/stats/connections).
       if (coreSocketPath.length > 0) {
         try {
           const linked = nativeBridge.startEmbeddedCore(
             coreSocketPath,
             this.context.filesDir,
           );
+          if (linked <= 0) {
+            throw new Error(
+              `startEmbeddedCore failed: ${nativeBridge.lastError()}`,
+            );
+          }
           console.info(
             `[FlClashVpnAbility] core UI link socket=${coreSocketPath} result=${linked}`,
           );
         } catch (error) {
-          console.warn(
-            `[FlClashVpnAbility] core UI link failed: ${JSON.stringify(error)}`,
+          throw new Error(
+            `core UI link failed: ${stringifyError(error)}`,
           );
         }
       }
       writeVpnStatus(this.context.filesDir, 'started');
       console.info(
-        `[FlClashVpnAbility] started fd=${fd} stack=${stack} ipv6=${ipv6} allowBypass=${allowBypass}`,
+        `[FlClashVpnAbility] started fd=${fd} stack=${stack} ipv6=${ipv6}`,
       );
     } catch (error) {
-      writeVpnStatus(
-        this.context.filesDir,
-        `failed:${JSON.stringify(error) ?? `${error}`}`,
-      );
-      console.error(
-        `[FlClashVpnAbility] start failed: ${JSON.stringify(error)} lastError=${nativeBridge.lastError()}`,
-      );
+      const errorMessage = stringifyError(error);
+      const cleanupErrors: string[] = [];
+      if (tunStarted) {
+        try {
+          const stopped = nativeBridge.stopTun();
+          if (!stopped) {
+            cleanupErrors.push(`stopTun failed: ${nativeBridge.lastError()}`);
+          }
+        } catch (cleanupError) {
+          cleanupErrors.push(`stopTun failed: ${stringifyError(cleanupError)}`);
+        }
+        try {
+          const stopped = nativeBridge.stopTrackedCore();
+          if (!stopped) {
+            cleanupErrors.push(
+              `stopTrackedCore failed: ${nativeBridge.lastError()}`,
+            );
+          }
+        } catch (cleanupError) {
+          cleanupErrors.push(
+            `stopTrackedCore failed: ${stringifyError(cleanupError)}`,
+          );
+        }
+      }
       try {
         await this.vpnConnection?.destroy();
-      } catch (_) {}
+      } catch (cleanupError) {
+        cleanupErrors.push(`destroy failed: ${stringifyError(cleanupError)}`);
+      }
+      writeVpnStatus(
+        this.context.filesDir,
+        `failed:${errorMessage}${cleanupErrors.length > 0 ? ` | ${cleanupErrors.join(' | ')}` : ''}`,
+      );
+      console.error(
+        `[FlClashVpnAbility] start failed: ${errorMessage} lastError=${nativeBridge.lastError()}`,
+      );
       this.vpnConnection = null;
-      throw new Error(`${error}`);
+      throw new Error(errorMessage);
     }
   }
 
   async onDestroy(): Promise<void> {
-    writeVpnStatus(this.context.filesDir, 'stopped');
+    const teardownErrors: string[] = [];
     try {
-      nativeBridge.stopTun();
+      const stopped = nativeBridge.stopTun();
+      if (!stopped) {
+        const errorMessage = nativeBridge.lastError();
+        teardownErrors.push(`stopTun failed: ${errorMessage}`);
+        console.error(
+          `[FlClashVpnAbility] stopTun failed: ${errorMessage} lastError=${errorMessage}`,
+        );
+      }
     } catch (error) {
+      teardownErrors.push(`stopTun failed: ${stringifyError(error)}`);
       console.error(
-        `[FlClashVpnAbility] stopTun failed: ${JSON.stringify(error)} lastError=${nativeBridge.lastError()}`,
+        `[FlClashVpnAbility] stopTun failed: ${stringifyError(error)} lastError=${nativeBridge.lastError()}`,
+      );
+    }
+    try {
+      const stopped = nativeBridge.stopTrackedCore();
+      if (!stopped) {
+        const errorMessage = nativeBridge.lastError();
+        teardownErrors.push(`stopTrackedCore failed: ${errorMessage}`);
+        console.error(
+          `[FlClashVpnAbility] stopTrackedCore failed: ${errorMessage} lastError=${errorMessage}`,
+        );
+      }
+    } catch (error) {
+      teardownErrors.push(`stopTrackedCore failed: ${stringifyError(error)}`);
+      console.error(
+        `[FlClashVpnAbility] stopTrackedCore failed: ${stringifyError(error)} lastError=${nativeBridge.lastError()}`,
       );
     }
     try {
       await this.vpnConnection?.destroy();
     } catch (error) {
+      teardownErrors.push(`destroy failed: ${stringifyError(error)}`);
       console.error(
-        `[FlClashVpnAbility] destroy failed: ${JSON.stringify(error)}`,
+        `[FlClashVpnAbility] destroy failed: ${stringifyError(error)}`,
       );
     }
     this.vpnConnection = null;
     this.protectLoopToken += 1;
+    if (teardownErrors.length > 0) {
+      writeVpnStatus(
+        this.context.filesDir,
+        `failed:${teardownErrors.join(' | ')}`,
+      );
+      return;
+    }
+    writeVpnStatus(this.context.filesDir, 'stopped');
   }
 }

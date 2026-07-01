@@ -34,9 +34,6 @@ class DeveloperView extends ConsumerWidget {
             prepared,
             title: 'flclash_qr_test',
           );
-    commonPrint.log(
-      '[ohos-qr] importQrTestImage path=$path prepared=$prepared imported=$imported',
-    );
     if (context.mounted) {
       context.showNotifier(imported == null ? '导入图库失败' : '已导入图库');
     }

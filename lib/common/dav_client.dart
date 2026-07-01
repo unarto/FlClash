@@ -20,12 +20,9 @@ class DAVClient {
 
   Future<bool> ping() async {
     try {
-      commonPrint.log('[dav-client] ping start root=$root backupFile=$backupFile');
       await client.ping();
-      commonPrint.log('[dav-client] ping success root=$root');
       return true;
-    } catch (error) {
-      commonPrint.log('[dav-client] ping failed root=$root error=$error');
+    } catch (_) {
       return false;
     }
   }
@@ -46,23 +43,15 @@ class DAVClient {
   }
 
   Future<bool> backup(String localFilePath) async {
-    commonPrint.log(
-      '[dav-client] backup start local=$localFilePath remote=$backupFile',
-    );
     await _ensureRoot();
     await client.writeFromFile(localFilePath, backupFile);
-    commonPrint.log('[dav-client] backup success remote=$backupFile');
     return true;
   }
 
   Future<bool> restore() async {
-    commonPrint.log('[dav-client] restore start remote=$backupFile');
     await _ensureRoot();
     final backupFilePath = await appPath.backupFilePath;
     await client.read2File(backupFile, backupFilePath);
-    commonPrint.log(
-      '[dav-client] restore success remote=$backupFile local=$backupFilePath',
-    );
     return true;
   }
 }

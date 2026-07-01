@@ -88,14 +88,7 @@ class CoreController {
     final data = await rootBundle.load('assets/data/FlClashCore');
     final bytes = data.buffer.asUint8List();
     await bundledCoreFile.writeAsBytes(bytes, flush: true);
-    commonPrint.log(
-      '[BOOT] initOhosCoreBinary refreshed path=$bundledCorePath bytes=${bytes.length}',
-    );
-    final markedExecutable =
-        await app?.markExecutable(bundledCorePath) ?? false;
-    commonPrint.log(
-      '[BOOT] initOhosCoreBinary executable=$markedExecutable path=$bundledCorePath',
-    );
+    await app?.markExecutable(bundledCorePath);
   }
 
   Future<bool> init(int version) async {
@@ -165,10 +158,6 @@ class CoreController {
         defaultTestUrl: defaultTestUrl,
       ),
     );
-    commonPrint.log(
-      '[proxy-debug] getProxiesGroups groups=${groups.length} '
-      '${groups.map((group) => "${group.name}:${group.all.length}:${group.now ?? ''}").join("; ")}',
-    );
     return groups;
   }
 
@@ -218,10 +207,6 @@ class CoreController {
         (await externalProvidersRawString.commonToJSON<List<dynamic>>())
             .map((item) => ExternalProvider.fromJson(item))
             .toList();
-    commonPrint.log(
-      '[proxy-debug] externalProviders '
-      '${externalProviders.map((item) => "${item.name}:${item.type}:${item.count}:${item.vehicleType}").join("; ")}',
-    );
     return externalProviders;
   }
 
@@ -236,10 +221,6 @@ class CoreController {
     }
     final provider = ExternalProvider.fromJson(
       json.decode(externalProvidersRawString),
-    );
-    commonPrint.log(
-      '[proxy-debug] externalProvider '
-      '${provider.name}:${provider.type}:${provider.count}:${provider.vehicleType}',
     );
     return provider;
   }

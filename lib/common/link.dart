@@ -10,10 +10,29 @@ import 'system.dart';
 
 typedef InstallConfigCallBack = void Function(String url);
 
+const _ohosLinkDedupeWindow = Duration(seconds: 2);
+
+bool shouldHandleOhosLinkEvent({
+  required String? lastUriString,
+  required DateTime? lastHandledAt,
+  required String uriString,
+  required DateTime now,
+}) {
+  if (lastUriString != uriString) {
+    return true;
+  }
+  if (lastHandledAt == null) {
+    return true;
+  }
+  return now.difference(lastHandledAt) > _ohosLinkDedupeWindow;
+}
+
 class LinkManager {
   static LinkManager? _instance;
   late AppLinks _appLinks;
   StreamSubscription? subscription;
+  String? _lastOhosUriString;
+  DateTime? _lastOhosHandledAt;
 
   LinkManager._internal() {
     _appLinks = AppLinks();
@@ -25,13 +44,18 @@ class LinkManager {
     commonPrint.log('initAppLinksListen');
     destroy();
     if (system.isOhos) {
+      await app?.updateAppLinkListenerReady(false);
       app?.onAppLink = (link) async {
-        commonPrint.log('onAppLink from ohos channel: $link');
         _handleUriString(link, installConfigCallBack);
       };
-      final pendingLink = await app?.consumePendingLink();
-      commonPrint.log('consumePendingLink on ohos: $pendingLink');
-      _handleUriString(pendingLink, installConfigCallBack);
+      while (true) {
+        final pendingLink = await app?.consumePendingLink();
+        if (pendingLink == null || pendingLink.isEmpty) {
+          break;
+        }
+        _handleUriString(pendingLink, installConfigCallBack);
+      }
+      await app?.updateAppLinkListenerReady(true);
       return;
     }
     subscription = _appLinks.uriLinkStream.listen(
@@ -60,6 +84,15 @@ class LinkManager {
     InstallConfigCallBack installConfigCallBack,
   ) {
     if (uriString == null || uriString.isEmpty) return;
+    if (system.isOhos &&
+        !shouldHandleOhosLinkEvent(
+          lastUriString: _lastOhosUriString,
+          lastHandledAt: _lastOhosHandledAt,
+          uriString: uriString,
+          now: DateTime.now(),
+        )) {
+      return;
+    }
     final uri = Uri.tryParse(uriString);
     if (uri == null) {
       commonPrint.log(
@@ -67,6 +100,10 @@ class LinkManager {
         logLevel: LogLevel.warning,
       );
       return;
+    }
+    if (system.isOhos) {
+      _lastOhosUriString = uriString;
+      _lastOhosHandledAt = DateTime.now();
     }
     _handleUri(uri, installConfigCallBack);
   }
@@ -81,7 +118,10 @@ class LinkManager {
 
   void destroy() {
     if (system.isOhos) {
+      unawaited(app?.updateAppLinkListenerReady(false));
       app?.onAppLink = null;
+      _lastOhosUriString = null;
+      _lastOhosHandledAt = null;
     }
     if (subscription != null) {
       subscription?.cancel();

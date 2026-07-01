@@ -24,27 +24,21 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
   bool _didAutoPickFromGallery = false;
 
   Future<void> _stopScanner() async {
-    commonPrint.log('[ohos-qr] stop scanner begin');
     await _subscription?.cancel();
     _subscription = null;
     await controller.stop();
-    commonPrint.log('[ohos-qr] stop scanner done');
   }
 
   Future<void> _handlePickFromGallery() async {
-    commonPrint.log('[ohos-qr] gallery button tapped');
     await _stopScanner();
     final url = await globalState.safeRun(picker.pickerConfigQRCode);
-    commonPrint.log('[ohos-qr] pickerConfigQRCode result=$url');
     if (!mounted || url == null) {
       if (mounted) {
-        commonPrint.log('[ohos-qr] restart scanner after null result');
         _subscription = controller.barcodes.listen(_handleBarcode);
         unawaited(controller.start());
       }
       return;
     }
-    commonPrint.log('[ohos-qr] pop scan page with url=$url');
     Navigator.pop<String>(context, url);
   }
 

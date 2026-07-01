@@ -37,7 +37,8 @@ What this checks:
     - PASS only when FlClashVpnAbility reports a started tunnel
     - FAIL on known emulator blockers such as:
       - com.huawei.hmos.vpndialog missing
-      - vpn extension not ready
+      - startVpnExtensionAbility timeout with no later started marker
+      - failed:* final VPN status / explicit start failure marker
       - AppPlugin / OHOS-VPN start failures
     - INCONCLUSIVE if no decisive VPN start result is observed
 EOF
@@ -69,6 +70,7 @@ resolve_target() {
   local targets=()
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
+    [[ "$target" == "[Empty]" ]] && continue
     targets+=("$target")
   done < <("$HDC_BIN" list targets 2>/dev/null || true)
 
@@ -136,20 +138,146 @@ print_section() {
   echo "== $title =="
 }
 
-classify_child_process() {
+vpn_logs_have_started() {
+  local logs="$1"
+  grep -Eq '\[FlClashVpnAbility\] started fd=' <<<"$logs"
+}
+
+vpn_logs_have_timeout_style_appplugin_failure() {
+  local logs="$1"
+  grep -Eq '\[AppPlugin\] startVpn failed error=startVpnExtensionAbility timeout([[:space:]]|$)' <<<"$logs"
+}
+
+vpn_logs_have_non_timeout_appplugin_failure() {
+  local logs="$1"
+  grep -E '\[AppPlugin\] startVpn failed' <<<"$logs" \
+    | grep -Ev 'error=startVpnExtensionAbility timeout([[:space:]]|$)' >/dev/null
+}
+
+vpn_logs_have_live_terminal_failure() {
   local logs="$1"
 
-  if grep -Eq '(\[AppPlugin\] startCoreChildProcess pid=|Started OHOS core child process pid=|NativeChildProcess_MainProc pid=)' <<<"$logs"; then
+  if grep -Eq '(com\.huawei\.hmos\.vpndialog|\[OHOS-VPN\] start failed|\[FlClashVpnAbility\] start failed:)' <<<"$logs"; then
+    return 0
+  fi
+
+  vpn_logs_have_non_timeout_appplugin_failure "$logs"
+}
+
+vpn_logs_have_final_failure() {
+  local logs="$1"
+
+  if vpn_logs_have_live_terminal_failure "$logs"; then
+    return 0
+  fi
+
+  vpn_logs_have_timeout_style_appplugin_failure "$logs"
+}
+
+vpn_latest_decisive_marker() {
+  local logs="$1"
+  local marker=""
+
+  while IFS= read -r line; do
+    if [[ "$line" =~ \[FlClashVpnAbility\]\ started\ fd= ]]; then
+      marker="started"
+      continue
+    fi
+    if [[ "$line" =~ com\.huawei\.hmos\.vpndialog ]]; then
+      marker="failure"
+      continue
+    fi
+    if [[ "$line" =~ \[OHOS-VPN\]\ start\ failed ]]; then
+      marker="failure"
+      continue
+    fi
+    if [[ "$line" =~ \[FlClashVpnAbility\]\ start\ failed: ]]; then
+      marker="failure"
+      continue
+    fi
+    if [[ "$line" =~ \[AppPlugin\]\ startVpn\ failed ]]; then
+      marker="failure"
+      continue
+    fi
+  done <<<"$logs"
+
+  printf '%s\n' "$marker"
+}
+
+child_process_latest_decisive_marker() {
+  local logs="$1"
+  local marker=""
+
+  while IFS= read -r line; do
+    if [[ "$line" =~ \[AppPlugin\]\ startCoreChildProcess\ pid= ]]; then
+      marker="success"
+      continue
+    fi
+    if [[ "$line" =~ Started\ OHOS\ core\ child\ process\ pid= ]]; then
+      marker="success"
+      continue
+    fi
+    if [[ "$line" =~ NativeChildProcess_MainProc\ pid= ]]; then
+      marker="success"
+      continue
+    fi
+    if [[ "$line" =~ Capability\ not\ support ]]; then
+      marker="failure"
+      continue
+    fi
+    if [[ "$line" =~ startCoreChildProcess\ failed\ pid= ]]; then
+      marker="failure"
+      continue
+    fi
+    if [[ "$line" =~ fexecve\ failed:\ Permission\ denied ]]; then
+      marker="failure"
+      continue
+    fi
+    if [[ "$line" =~ execv\ proc\ path\ failed:\ Permission\ denied ]]; then
+      marker="failure"
+      continue
+    fi
+    if [[ "$line" =~ source\ exec\ failed ]]; then
+      marker="failure"
+      continue
+    fi
+    if [[ "$line" =~ startBundledCoreProcess\ failed ]]; then
+      marker="failure"
+      continue
+    fi
+    if [[ "$line" =~ Started\ OHOS\ core\ executable\ via\ native\ bridge\ pid= ]]; then
+      marker="fallback"
+      continue
+    fi
+    if [[ "$line" =~ startBundledCoreProcess\ source= ]]; then
+      marker="fallback"
+      continue
+    fi
+    if [[ "$line" =~ fork\ ok\ pid= ]]; then
+      marker="fallback"
+      continue
+    fi
+  done <<<"$logs"
+
+  printf '%s\n' "$marker"
+}
+
+classify_child_process() {
+  local logs="$1"
+  local latest_marker
+  latest_marker=$(child_process_latest_decisive_marker "$logs")
+
+  if [[ "$latest_marker" == "success" ]]; then
     echo "PASS native child-process startup is directly proven."
     return 0
   fi
 
-  if grep -Eq '(Capability not support|startCoreChildProcess failed pid=|fexecve failed: Permission denied|execv proc path failed: Permission denied|source exec failed|startBundledCoreProcess failed)' <<<"$logs"; then
+  if [[ "$latest_marker" == "failure" ]] || grep -Eq '(Capability not support|startCoreChildProcess failed pid=|fexecve failed: Permission denied|execv proc path failed: Permission denied|source exec failed|startBundledCoreProcess failed)' <<<"$logs"; then
     echo "FAIL target blocked before native child-process verification completed."
     return 1
   fi
 
-  if grep -Eq '(Started OHOS core executable via native bridge pid=|startBundledCoreProcess source=|fork ok pid=)' <<<"$logs"; then
+  if [[ "$latest_marker" == "fallback" ]] || grep -Eq '(Started OHOS core executable via native bridge pid=|startBundledCoreProcess source=|fork ok pid=)' <<<"$logs"; then
     echo "INCONCLUSIVE only bundled-exec fallback evidence was observed; native child-process is not proven."
     return 2
   fi
@@ -160,13 +288,15 @@ classify_child_process() {
 
 classify_vpn() {
   local logs="$1"
+  local latest_marker
+  latest_marker=$(vpn_latest_decisive_marker "$logs")
 
-  if grep -Eq '\[FlClashVpnAbility\] started fd=' <<<"$logs"; then
+  if [[ "$latest_marker" == "started" ]]; then
     echo "PASS VPN ability started successfully."
     return 0
   fi
 
-  if grep -Eq '(com\.huawei\.hmos\.vpndialog|vpn extension not ready|\[AppPlugin\] startVpn failed|\[OHOS-VPN\] start failed|\[FlClashVpnAbility\] start failed:)' <<<"$logs"; then
+  if [[ "$latest_marker" == "failure" ]] || vpn_logs_have_final_failure "$logs"; then
     echo "FAIL VPN startup is blocked on the current target."
     return 1
   fi
@@ -225,7 +355,7 @@ collect_logs_for_mode() {
           fi
           ;;
         vpn)
-          if grep -Eq '(\[FlClashVpnAbility\] started fd=|com\.huawei\.hmos\.vpndialog|vpn extension not ready|\[AppPlugin\] startVpn failed|\[OHOS-VPN\] start failed|\[FlClashVpnAbility\] start failed:|\[AppPlugin\] startVpn stack=)' <<<"$logs"; then
+          if vpn_logs_have_started "$logs" || vpn_logs_have_live_terminal_failure "$logs"; then
             printf '%s\n' "$logs"
             return 0
           fi
@@ -297,8 +427,8 @@ main() {
     hdc_bin=$(resolve_hdc)
     HDC_BIN="$hdc_bin"
     target=$(resolve_target)
+    clear_logs "$target" "$hdc_bin"
     if [[ "$skip_install" -eq 0 ]]; then
-      clear_logs "$target" "$hdc_bin"
       if [[ -n "$hap_path" ]]; then
         bash "$INSTALL_SCRIPT" "$hap_path"
       else

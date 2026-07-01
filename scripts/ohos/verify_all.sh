@@ -27,11 +27,37 @@ resolve_hdc() {
   [[ -x "$DEVECO_HDC" ]] && { printf '%s\n' "$DEVECO_HDC"; return; }
   echo "ERROR: hdc not found" >&2; exit 1
 }
+
+resolve_target() {
+  if [[ -n "${HDC_TARGET:-}" ]]; then
+    printf '%s\n' "$HDC_TARGET"
+    return
+  fi
+
+  local targets=()
+  while IFS= read -r target; do
+    [[ -n "$target" ]] || continue
+    [[ "$target" == "[Empty]" ]] && continue
+    targets+=("$target")
+  done < <("$HDC" list targets 2>/dev/null || true)
+
+  case "${#targets[@]}" in
+    0)
+      echo "ERROR: no HarmonyOS target detected" >&2
+      exit 1
+      ;;
+    1)
+      printf '%s\n' "${targets[0]}"
+      ;;
+    *)
+      echo "ERROR: Multiple HarmonyOS targets detected; set HDC_TARGET explicitly" >&2
+      exit 1
+      ;;
+  esac
+}
+
 HDC="$(resolve_hdc)"
-if [[ -z "${HDC_TARGET:-}" ]]; then
-  HDC_TARGET="$("$HDC" list targets 2>/dev/null | grep -v '\[Empty\]' | head -1)"
-fi
-[[ -n "${HDC_TARGET:-}" ]] || { echo "ERROR: no device" >&2; exit 1; }
+HDC_TARGET="$(resolve_target)"
 export HDC_TARGET
 sh() { "$HDC" -t "$HDC_TARGET" shell "$@"; }
 ui() { bash "$UI" "$@"; }

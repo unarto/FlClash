@@ -261,7 +261,8 @@ Root cause for browsers not loading YouTube on Mate 80 Pro was found and fixed:
 Supporting changes made in the same investigation:
 
 - `ohos/entry/src/main/ets/vpn/vpn_config.ts`: added `HUAWEI_HTTPDNS_EXCLUDED_CIDRS`
-  (`125.88.252.0/24`, `49.4.0.0/16`, `121.36.0.0/16`) as excluded VPN routes. Huawei Browser resolves
+  (`139.9.0.0/16`, `49.4.0.0/16`, `121.36.0.0/16`, `125.88.0.0/16`,
+  `119.147.0.0/16`, `183.61.0.0/16`) as excluded VPN routes. Huawei Browser resolves
   hosts via its own HTTPDNS to those China edge servers; when routed into the tunnel they are reached
   through the foreign node and never answer, stalling each lookup ~10s (`code:10069004`). Excluding them
   keeps HTTPDNS on the local carrier network. After this change the browser reported `useHttpDns:0` and
@@ -270,9 +271,14 @@ Supporting changes made in the same investigation:
   force-enable TLS/HTTP/QUIC sniffing with `override-destination` + `parse-pure-ip` + `force-dns-mapping`
   on OHOS, as defense-in-depth for the documented OHOS DNS-hijack gap (system resolver does DNS on the
   underlying carrier interface, bypassing the tun, so poisoned IPs can still reach the core).
-- `isInternal=false` was tried and reverted: it did not fix DNS propagation (NetConnManager never
-  registered a VPN network either way) and the proxy `egress`/outbound was more stable with the original
-  `isInternal=true`.
+  **Later removed** (see the "The OHOS sniffer force-enable … were removed afterward" note above); these
+  files no longer exist in `core/`. This bullet is retained only as investigation history.
+- The June 26 single-variable `isInternal=false` experiment did not by itself fix DNS propagation
+  (`NetConnManager` never registered a VPN network either way). That probe should be read as historical
+  diagnosis, not the current source-state toggle recommendation: the later June 28 landed source uses
+  the current full-system VPN wiring (`blockedApplications: [bundleName]`, no `trustedApplications`
+  allowlist) together with `isInternal: false`, which is the configuration covered by
+  `docs/ohos-real-device-test-report.md`.
 
 Diagnostic facts captured (Mate 80 Pro `5JV0225B14001088`):
 
@@ -521,7 +527,7 @@ Current emulator-specific limitation re-verified on June 22, 2026:
 - Evidence from `hilog` on this workspace:
   - `bundle not exist -n com.huawei.hmos.vpndialog`
   - `ExplicitQueryExtension size:0 -n com.huawei.hmos.vpndialog -e VpnServiceExtAbility`
-  - `[AppPlugin] startVpn failed error=vpn extension not ready`
+  - `[AppPlugin] startVpn failed error=startVpnExtensionAbility timeout`
   - `[OHOS-VPN] start failed: OHOS VPN 授权组件缺失，当前模拟器无法完成系统 VPN 启动`
 - Practical consequence:
   - on the same `FlClash Tablet` build and emulator session, `网络 -> VPN` set to `off` still allows the dashboard start action to enter the running state and emit real proxy traffic
@@ -2516,7 +2522,7 @@ Current verification boundary in this workspace:
   - that archived log data still directly shows:
     - `[AppPlugin] startVpn stack=...`
     - `bundle not exist -n com.huawei.hmos.vpndialog`
-    - `[AppPlugin] startVpn failed error=vpn extension not ready`
+    - `[AppPlugin] startVpn failed error=startVpnExtensionAbility timeout`
     - `[OHOS-VPN] start failed: OHOS VPN 授权组件缺失，当前模拟器无法完成系统 VPN 启动`
   - a fresh low-load re-check on June 22, 2026 added new same-package UI evidence on the live `127.0.0.1:5555` tablet target:
     - `工具 -> 设置 -> 进阶配置 -> 网络` still exposes the real `VPN` row (`通过VpnService自动路由系统所有流量`)

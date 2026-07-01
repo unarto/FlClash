@@ -209,11 +209,6 @@ abstract class CoreHandlerInterface with CoreInterface {
     final proxiesData = data != null
         ? ProxiesData.fromJson(data)
         : const ProxiesData(proxies: {}, all: []);
-    commonPrint.log(
-      '[proxy-debug] getProxies raw all=${proxiesData.all.length} '
-      'keys=${proxiesData.proxies.length} '
-      'groups=${proxiesData.all.take(12).join(",")}',
-    );
     return proxiesData;
   }
 

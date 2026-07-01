@@ -1,15 +1,6 @@
 export interface OhosVpnApplicationLists {
   blockedApplications: Array<string>;
-  trustedApplications?: Array<string>;
 }
-
-const OHOS_VPN_TRUSTED_APPLICATIONS = [
-  'com.huawei.shell_assistant',
-  'com.huawei.hmos.browser',
-  'com.huawei.hmos.arkwebcore',
-  'com.huawei.hmos.arkwebcorelegacy',
-  'com.huawei.hmos.aidispatchservice',
-];
 
 interface OhosVpnAddress {
   address: string;
@@ -67,7 +58,6 @@ export function resolveOhosVpnApplicationLists(
   // resolving network, so the advertised DNS (172.19.0.2) never propagated and
   // browser DNS lookups bypassed the core. Routing everything restores the
   // Android-equivalent DNS propagation path.
-  void OHOS_VPN_TRUSTED_APPLICATIONS;
   return {
     blockedApplications: [bundleName],
   };

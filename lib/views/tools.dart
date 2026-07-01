@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:fl_clash/common/common.dart';
-import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/plugins/app.dart';
@@ -37,9 +36,7 @@ class _ToolViewState extends ConsumerState<ToolsView> {
   static const _ohosWebDavTestPassword = 'flclash-pass';
 
   Future<void> _importQrTestImage(BuildContext context) async {
-    commonPrint.log('[ohos-qr] tools importQrTestImage start');
     if (!system.isOhos) {
-      commonPrint.log('[ohos-qr] tools importQrTestImage skip non-ohos');
       return;
     }
     try {
@@ -56,17 +53,10 @@ class _ToolViewState extends ConsumerState<ToolsView> {
               prepared,
               title: 'flclash_qr_test',
             );
-      commonPrint.log(
-        '[ohos-qr] tools importQrTestImage path=$path prepared=$prepared imported=$imported',
-      );
       if (context.mounted) {
         context.showNotifier(imported == null ? '导入图库失败' : '已导入图库');
       }
-    } catch (error, stackTrace) {
-      commonPrint.log(
-        '[ohos-qr] tools importQrTestImage error=$error stack=$stackTrace',
-        logLevel: LogLevel.error,
-      );
+    } catch (_) {
       if (context.mounted) {
         context.showNotifier('导入图库失败');
       }
@@ -74,9 +64,7 @@ class _ToolViewState extends ConsumerState<ToolsView> {
   }
 
   Future<void> _exportQrTestImage(BuildContext context) async {
-    commonPrint.log('[ohos-qr] tools exportQrTestImage start');
     if (!system.isOhos) {
-      commonPrint.log('[ohos-qr] tools exportQrTestImage skip non-ohos');
       return;
     }
     try {
@@ -88,17 +76,10 @@ class _ToolViewState extends ConsumerState<ToolsView> {
         path,
         fileName: fileName,
       );
-      commonPrint.log(
-        '[ohos-qr] tools exportQrTestImage path=$path saved=$saved',
-      );
       if (context.mounted) {
         context.showNotifier(saved == null ? '导出测试二维码失败' : '已导出测试二维码');
       }
-    } catch (error, stackTrace) {
-      commonPrint.log(
-        '[ohos-qr] tools exportQrTestImage error=$error stack=$stackTrace',
-        logLevel: LogLevel.error,
-      );
+    } catch (_) {
       if (context.mounted) {
         context.showNotifier('导出测试二维码失败');
       }

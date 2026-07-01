@@ -16,7 +16,6 @@ import 'package:fl_clash/widgets/list.dart';
 import 'package:fl_clash/widgets/scaffold.dart';
 import 'package:fl_clash/widgets/text.dart';
 import 'package:flutter/material.dart';
-import 'package:archive/archive.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -129,11 +128,9 @@ class _BackupAndRestoreState extends ConsumerState<BackupAndRestore>
     final appLocalizations = context.appLocalizations;
     final res = await globalState.loadingRun<bool>(
       () async {
-        commonPrint.log('[backup-local] start backup action');
         final path = await globalState.container
             .read(backupActionProvider.notifier)
             .backup();
-        commonPrint.log('[backup-local] backup path: $path');
         if (path.isEmpty) {
           return false;
         }
@@ -141,7 +138,6 @@ class _BackupAndRestoreState extends ConsumerState<BackupAndRestore>
           utils.getBackupFileName(),
           path,
         );
-        commonPrint.log('[backup-local] saveFileWithPath result: $value');
         if (value == null) return false;
         return true;
       },
@@ -160,42 +156,20 @@ class _BackupAndRestoreState extends ConsumerState<BackupAndRestore>
     final file = await picker.pickerFile(withData: system.isOhos);
     if (file == null) return;
     final backupFilePath = await appPath.backupFilePath;
-    commonPrint.log(
-      '[restore-local] picked file name=${file.name} path=${file.path} bytes=${file.bytes?.length}',
-    );
     if (system.isOhos) {
       final bytes = file.bytes;
       if (bytes == null) return;
-      try {
-        final archive = ZipDecoder().decodeBytes(bytes);
-        final entries = archive.files
-            .map((item) => '${item.name}:${item.isFile ? 'file' : 'dir'}')
-            .join(', ');
-        commonPrint.log(
-          '[zip-verify] restore picked archive entries=${archive.files.length} [$entries]',
-        );
-      } catch (error) {
-        commonPrint.log(
-          '[zip-verify] restore picked archive inspect failed: $error',
-        );
-      }
       await File(backupFilePath).safeWriteAsBytes(bytes);
-      commonPrint.log('[restore-local] wrote bytes to $backupFilePath');
     } else {
       final path = file.path;
       if (path == null) return;
       await File(path).safeCopy(backupFilePath);
-      commonPrint.log('[restore-local] copied file to $backupFilePath');
     }
     final res = await globalState.loadingRun<bool>(
       () async {
-        commonPrint.log('[restore-local] start restore option=${option.name}');
         await globalState.container
             .read(backupActionProvider.notifier)
             .restore(option);
-        commonPrint.log(
-          '[restore-local] restore finished option=${option.name}',
-        );
         return true;
       },
       tag: LoadingTag.backup_restore,
@@ -212,7 +186,6 @@ class _BackupAndRestoreState extends ConsumerState<BackupAndRestore>
     final option = await globalState.showCommonDialog<RestoreOption>(
       child: const RestoreOptionsDialog(),
     );
-    commonPrint.log('[restore-local] dialog result option=$option');
     if (option == null || !mounted) return;
     _restoreOnLocal(option);
   }
@@ -405,7 +378,6 @@ class RestoreOptionsDialog extends StatefulWidget {
 class _RestoreOptionsDialogState extends State<RestoreOptionsDialog> {
   void _handleOnTab(RestoreOption? option) {
     if (option == null) return;
-    commonPrint.log('[restore-local] tap restore option=${option.name}');
     Navigator.of(context).pop(option);
   }
 

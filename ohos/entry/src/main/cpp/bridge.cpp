@@ -4,7 +4,9 @@
 #include <spawn.h>
 #include <sys/mman.h>
 #include <arpa/inet.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <chrono>
 #include <cstdio>
@@ -25,6 +27,7 @@
 #include <AbilityKit/native_child_process.h>
 #include <hilog/log.h>
 #include "napi/native_api.h"
+#include "tracked_core_state.h"
 
 namespace {
 
@@ -36,6 +39,7 @@ using StartTunFn = bool (*)(void *, int, char *, char *, char *);
 using StopTunFn = void (*)();
 using StartServerProcessFn = void (*)(char *, char *);
 using StartServerProcessDetachedFn = void (*)(char *, char *);
+using StopServerProcessDetachedFn = void (*)();
 using ProtectBridgeFn = void (*)(void *, int);
 using ResolveProcessBridgeFn =
     char *(*)(void *, int, const char *, const char *, int);
@@ -56,10 +60,12 @@ QuickSetupFn g_quick_setup = nullptr;
 StartTunFn g_start_tun = nullptr;
 StopTunFn g_stop_tun = nullptr;
 bool g_event_listener_registered = false;
-bool g_embedded_core_started = false;
 std::thread g_embedded_core_thread;
 std::mutex g_state_mutex;
 std::vector<std::string> g_event_payloads;
+StopServerProcessDetachedFn g_stop_server_process_detached = nullptr;
+TrackedCoreState g_tracked_core_state;
+bool g_child_exit_callback_registered = false;
 
 struct PendingResult {
   std::mutex mutex;
@@ -101,11 +107,6 @@ std::mutex g_probe_mutex;
 std::condition_variable g_probe_condition;
 bool g_probe_completed = false;
 int g_probe_result = NCP_ERR_TIMEOUT;
-std::mutex g_exit_mutex;
-std::condition_variable g_exit_condition;
-bool g_exit_received = false;
-int32_t g_exit_pid = -1;
-int32_t g_exit_signal = 0;
 
 void ClearError() {
   g_last_error.clear();
@@ -253,13 +254,15 @@ std::string BuildChildCoreLogPath(const std::string &entry_params) {
 bool EnsureCoreLoaded() {
   if (g_invoke_action != nullptr && g_quick_setup != nullptr &&
       g_start_tun != nullptr &&
-      g_stop_tun != nullptr) {
+      g_stop_tun != nullptr &&
+      g_stop_server_process_detached != nullptr) {
     return true;
   }
   std::lock_guard<std::mutex> lock(g_state_mutex);
   if (g_invoke_action != nullptr && g_quick_setup != nullptr &&
       g_start_tun != nullptr &&
-      g_stop_tun != nullptr) {
+      g_stop_tun != nullptr &&
+      g_stop_server_process_detached != nullptr) {
     return true;
   }
   ClearError();
@@ -317,6 +320,20 @@ bool EnsureCoreLoaded() {
     return SetError(error == nullptr ? "dlsym stopTun failed" : error);
   }
   g_stop_tun = reinterpret_cast<StopTunFn>(stop_tun_symbol);
+  auto stop_server_symbol = dlsym(g_core_handle, "stopServerProcessDetached");
+  if (stop_server_symbol == nullptr) {
+    const char *error = dlerror();
+    g_invoke_action = nullptr;
+    g_free_c_string = nullptr;
+    g_set_event_listener = nullptr;
+    g_quick_setup = nullptr;
+    g_start_tun = nullptr;
+    g_stop_tun = nullptr;
+    return SetError(
+        error == nullptr ? "dlsym stopServerProcessDetached failed" : error);
+  }
+  g_stop_server_process_detached =
+      reinterpret_cast<StopServerProcessDetachedFn>(stop_server_symbol);
   auto protect_symbol = dlsym(g_core_handle, "protect_func");
   if (protect_symbol != nullptr) {
     g_protect_bridge = reinterpret_cast<ProtectBridgeFn *>(protect_symbol);
@@ -333,6 +350,21 @@ bool EnsureCoreLoaded() {
     g_event_listener_registered = true;
   }
   return true;
+}
+
+uint64_t TrackCoreLaunch(CoreLaunchMode mode, int32_t pid = -1) {
+  return g_tracked_core_state.Track(mode, pid);
+}
+
+void ClearTrackedCoreLaunch() {
+  g_tracked_core_state.Clear();
+}
+
+bool ClearTrackedCoreLaunchIfMatches(
+    CoreLaunchMode mode,
+    int32_t pid,
+    uint64_t token) {
+  return g_tracked_core_state.ClearIfMatches(mode, pid, token);
 }
 
 std::string ConsumeQueuedCoreEvents() {
@@ -898,11 +930,15 @@ void ProbeChildProcessStarted(int errCode, OHIPCRemoteProxy *remote_proxy) {
 }
 
 void HandleChildProcessExit(int32_t pid, int32_t signal) {
-  std::lock_guard<std::mutex> lock(g_exit_mutex);
-  g_exit_pid = pid;
-  g_exit_signal = signal;
-  g_exit_received = true;
-  g_exit_condition.notify_one();
+  AppendEarlyDebugLog(
+      "child exit callback pid=" + std::to_string(pid) + " signal=" +
+      std::to_string(signal));
+  const bool cleared = ClearTrackedCoreLaunchIfMatches(
+      CoreLaunchMode::kChild,
+      pid,
+      0);
+  AppendEarlyDebugLog(
+      "child exit callback cleared=" + std::string(cleared ? "true" : "false"));
 }
 
 napi_value ProbeCreateNativeChildProcess(napi_env env, napi_callback_info info) {
@@ -964,12 +1000,12 @@ napi_value StartCoreChildProcess(napi_env env, napi_callback_info info) {
   options.isolationMode = NCP_ISOLATION_MODE_NORMAL;
 
   {
-    std::lock_guard<std::mutex> lock(g_exit_mutex);
-    g_exit_received = false;
-    g_exit_pid = -1;
-    g_exit_signal = 0;
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    if (!g_child_exit_callback_registered) {
+      OH_Ability_RegisterNativeChildProcessExitCallback(&HandleChildProcessExit);
+      g_child_exit_callback_registered = true;
+    }
   }
-  OH_Ability_RegisterNativeChildProcessExitCallback(&HandleChildProcessExit);
 
   int32_t pid = -1;
   const auto err = OH_Ability_StartNativeChildProcess(
@@ -982,7 +1018,6 @@ napi_value StartCoreChildProcess(napi_env env, napi_callback_info info) {
     std::lock_guard<std::mutex> lock(g_state_mutex);
     ClearError();
     if (err != NCP_NO_ERROR) {
-      OH_Ability_UnregisterNativeChildProcessExitCallback(&HandleChildProcessExit);
       SetError(
           "OH_Ability_StartNativeChildProcess failed: " +
           std::to_string(err));
@@ -990,25 +1025,17 @@ napi_value StartCoreChildProcess(napi_env env, napi_callback_info info) {
     }
   }
 
-  std::thread([]() {
-    std::unique_lock<std::mutex> lock(g_exit_mutex);
-    const bool received = g_exit_condition.wait_for(
-        lock,
-        std::chrono::seconds(20),
-        []() { return g_exit_received; });
-    const auto pid = g_exit_pid;
-    const auto signal = g_exit_signal;
-    lock.unlock();
-    if (received) {
-      AppendEarlyDebugLog(
-          "child exit callback pid=" + std::to_string(pid) + " signal=" +
-          std::to_string(signal));
-    } else {
-      AppendEarlyDebugLog("child exit callback timeout");
-    }
-    OH_Ability_UnregisterNativeChildProcessExitCallback(&HandleChildProcessExit);
-  }).detach();
-
+  TrackCoreLaunch(CoreLaunchMode::kChild, pid);
+  errno = 0;
+  if (waitpid(pid, nullptr, WNOHANG) == pid || kill(pid, 0) != 0) {
+    ClearTrackedCoreLaunchIfMatches(
+        CoreLaunchMode::kChild,
+        pid,
+        0);
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError("native child process exited before startup completed");
+    return CreateInt32(env, -1);
+  }
   return CreateInt32(env, pid);
 }
 
@@ -1116,6 +1143,17 @@ napi_value StartBundledCoreProcess(napi_env env, napi_callback_info info) {
   }
 
   AppendDebugLog(debug_log_path, "posix_spawn ok pid=" + std::to_string(pid));
+  TrackCoreLaunch(CoreLaunchMode::kBundled, pid);
+  errno = 0;
+  if (waitpid(pid, nullptr, WNOHANG) == pid || kill(pid, 0) != 0) {
+    ClearTrackedCoreLaunchIfMatches(
+        CoreLaunchMode::kBundled,
+        pid,
+        0);
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError("bundled core process exited before startup completed");
+    return CreateInt32(env, -1);
+  }
   return CreateInt32(env, pid);
 }
 
@@ -1143,73 +1181,186 @@ napi_value StartEmbeddedCore(napi_env env, napi_callback_info info) {
   const std::string debug_log_path = JoinPath(log_dir_path, "flclash-bridge.log");
   const std::string core_log_path = JoinPath(log_dir_path, "flclash-core.log");
 
+  uint64_t embedded_launch_token = 0;
   {
     std::lock_guard<std::mutex> lock(g_state_mutex);
     ClearError();
-    if (g_embedded_core_started) {
-      SetError("embedded core already started");
-      return CreateInt32(env, -1);
-    }
-    g_embedded_core_started = true;
+  }
+  if (!g_tracked_core_state.TryTrackEmbedded(&embedded_launch_token)) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError("embedded core already started");
+    return CreateInt32(env, -1);
   }
 
   AppendDebugLog(
       debug_log_path,
       "startEmbeddedCore socket=" + socket_path + " logDir=" + log_dir_path);
+  dlerror();
+  void *core_handle = dlopen("libclash.so", RTLD_NOW | RTLD_LOCAL);
+  if (core_handle == nullptr) {
+    const char *error = dlerror();
+    const std::string message =
+        "startEmbeddedCore dlopen libclash.so failed: " +
+        std::string(error == nullptr ? "unknown" : error);
+    ClearTrackedCoreLaunchIfMatches(
+        CoreLaunchMode::kEmbedded,
+        -1,
+        embedded_launch_token);
+    AppendDebugLog(debug_log_path, message);
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError(message);
+    return CreateInt32(env, -1);
+  }
+
+  auto *start_server_process = reinterpret_cast<StartServerProcessDetachedFn>(
+      dlsym(core_handle, "startServerProcessDetached"));
+  if (start_server_process == nullptr) {
+    const char *error = dlerror();
+    const std::string message =
+        "startEmbeddedCore dlsym startServerProcessDetached failed: " +
+        std::string(error == nullptr ? "unknown" : error);
+    ClearTrackedCoreLaunchIfMatches(
+        CoreLaunchMode::kEmbedded,
+        -1,
+        embedded_launch_token);
+    AppendDebugLog(debug_log_path, message);
+    dlclose(core_handle);
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError(message);
+    return CreateInt32(env, -1);
+  }
+
   g_embedded_core_thread = std::thread(
-      [socket_path, core_log_path, debug_log_path]() {
+      [socket_path,
+       core_log_path,
+       start_server_process,
+       debug_log_path]() {
         AppendDebugLog(debug_log_path, "embedded core thread start");
-        dlerror();
-        void *core_handle = dlopen("libclash.so", RTLD_NOW | RTLD_LOCAL);
-        if (core_handle == nullptr) {
-          const char *error = dlerror();
-          const std::string message =
-              "startEmbeddedCore dlopen libclash.so failed: " +
-              std::string(error == nullptr ? "unknown" : error);
-          {
-            std::lock_guard<std::mutex> lock(g_state_mutex);
-            SetError(message);
-            g_embedded_core_started = false;
-          }
-          AppendDebugLog(debug_log_path, message);
-          return;
-        }
-
-        auto *start_server_process = reinterpret_cast<StartServerProcessDetachedFn>(
-            dlsym(core_handle, "startServerProcessDetached"));
-        if (start_server_process == nullptr) {
-          const char *error = dlerror();
-          const std::string message =
-              "startEmbeddedCore dlsym startServerProcessDetached failed: " +
-              std::string(error == nullptr ? "unknown" : error);
-          {
-            std::lock_guard<std::mutex> lock(g_state_mutex);
-            SetError(message);
-            g_embedded_core_started = false;
-          }
-          AppendDebugLog(debug_log_path, message);
-          dlclose(core_handle);
-          return;
-        }
-
         std::vector<char> socket_path_buffer(socket_path.begin(), socket_path.end());
         socket_path_buffer.push_back('\0');
         std::vector<char> core_log_path_buffer(core_log_path.begin(), core_log_path.end());
         core_log_path_buffer.push_back('\0');
 
+        // startServerProcessDetached is non-blocking: it spawns its own detached
+        // goroutine (with panic recovery + generation guard) and returns at once.
+        // The core therefore stays live after this returns, so we must NOT dlclose
+        // the library or clear the tracked-core state here — doing so wiped the
+        // embedded tracking milliseconds after launch, turning StopTrackedCore into
+        // a silent no-op and allowing a second embedded core to start over the first.
+        // The library stays loaded via g_core_handle; StopTrackedCore is the sole
+        // owner of stopping and clearing the embedded launch.
         AppendDebugLog(debug_log_path, "embedded core startServerProcessDetached enter");
         start_server_process(
             socket_path.empty() ? nullptr : socket_path_buffer.data(),
             core_log_path.empty() ? nullptr : core_log_path_buffer.data());
         AppendDebugLog(debug_log_path, "embedded core startServerProcessDetached returned");
-        dlclose(core_handle);
-        {
-          std::lock_guard<std::mutex> lock(g_state_mutex);
-          g_embedded_core_started = false;
-        }
       });
   g_embedded_core_thread.detach();
-  return CreateInt32(env, static_cast<int32_t>(getpid()));
+  return CreateInt32(env, 1);
+}
+
+napi_value StopTrackedCore(napi_env env, napi_callback_info info) {
+  (void)info;
+  auto tracked_core = TrackedCoreSnapshot {};
+  {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    ClearError();
+  }
+  tracked_core = g_tracked_core_state.Current();
+
+  if (tracked_core.mode == CoreLaunchMode::kNone) {
+    return CreateBool(env, true);
+  }
+
+  if (tracked_core.mode == CoreLaunchMode::kEmbedded) {
+    if (!EnsureCoreLoaded()) {
+      return CreateBool(env, false);
+    }
+    if (g_stop_server_process_detached == nullptr) {
+      std::lock_guard<std::mutex> lock(g_state_mutex);
+      SetError("stopServerProcessDetached unavailable");
+      return CreateBool(env, false);
+    }
+    g_stop_server_process_detached();
+    ClearTrackedCoreLaunchIfMatches(
+        tracked_core.mode,
+        tracked_core.pid,
+        tracked_core.token);
+    return CreateBool(env, true);
+  }
+
+  if (tracked_core.pid <= 0) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError("tracked core pid unavailable");
+    return CreateBool(env, false);
+  }
+
+  if (tracked_core.mode == CoreLaunchMode::kChild) {
+#if __OHOS_API__ >= 22
+    const auto err = OH_Ability_KillChildProcess(tracked_core.pid);
+    if (err != NCP_NO_ERROR && err != NCP_ERR_INVALID_PID) {
+      std::lock_guard<std::mutex> lock(g_state_mutex);
+      SetError("OH_Ability_KillChildProcess failed: " + std::to_string(err));
+      return CreateBool(env, false);
+    }
+#else
+    if (kill(tracked_core.pid, SIGTERM) != 0 && errno != ESRCH) {
+      std::lock_guard<std::mutex> lock(g_state_mutex);
+      SetError(std::string("kill child process failed: ") + std::strerror(errno));
+      return CreateBool(env, false);
+    }
+#endif
+    errno = 0;
+    if (waitpid(tracked_core.pid, nullptr, 0) != tracked_core.pid &&
+        errno != ECHILD) {
+      std::lock_guard<std::mutex> lock(g_state_mutex);
+      SetError(std::string("waitpid child process failed: ") + std::strerror(errno));
+      return CreateBool(env, false);
+    }
+    ClearTrackedCoreLaunchIfMatches(
+        tracked_core.mode,
+        tracked_core.pid,
+        tracked_core.token);
+    return CreateBool(env, true);
+  }
+
+  if (kill(tracked_core.pid, SIGTERM) != 0 && errno != ESRCH) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError(std::string("kill bundled process failed: ") + std::strerror(errno));
+    return CreateBool(env, false);
+  }
+
+  for (int attempt = 0; attempt < 20; ++attempt) {
+    if (waitpid(tracked_core.pid, nullptr, WNOHANG) == tracked_core.pid ||
+        kill(tracked_core.pid, 0) != 0) {
+      ClearTrackedCoreLaunchIfMatches(
+          tracked_core.mode,
+          tracked_core.pid,
+          tracked_core.token);
+      return CreateBool(env, true);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  if (kill(tracked_core.pid, SIGKILL) != 0 && errno != ESRCH) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError(std::string("force kill bundled process failed: ") + std::strerror(errno));
+    return CreateBool(env, false);
+  }
+
+  errno = 0;
+  if (waitpid(tracked_core.pid, nullptr, 0) != tracked_core.pid &&
+      errno != ECHILD) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    SetError(std::string("waitpid bundled process failed: ") + std::strerror(errno));
+    return CreateBool(env, false);
+  }
+
+  ClearTrackedCoreLaunchIfMatches(
+      tracked_core.mode,
+      tracked_core.pid,
+      tracked_core.token);
+  return CreateBool(env, true);
 }
 
 }  // namespace
@@ -1233,6 +1384,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        nullptr, nullptr, napi_default, nullptr},
       {"startEmbeddedCore", nullptr, StartEmbeddedCore, nullptr, nullptr,
        nullptr, napi_default, nullptr},
+      {"stopTrackedCore", nullptr, StopTrackedCore, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"quickSetup", nullptr, QuickSetup, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"lastError", nullptr, LastError, nullptr, nullptr, nullptr,

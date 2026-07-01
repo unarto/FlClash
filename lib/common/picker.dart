@@ -1,12 +1,8 @@
 import 'dart:io';
 
-import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/core.dart';
-import 'package:fl_clash/enum/enum.dart';
-import 'package:fl_clash/plugins/app.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -49,7 +45,6 @@ class Picker {
             });
       } on PlatformException catch (error) {
         if (isPickerCancellation(error)) {
-          commonPrint.log('[picker] ohos picker cancelled by user');
           return null;
         }
         rethrow;
@@ -82,7 +77,6 @@ class Picker {
       );
     } on PlatformException catch (error) {
       if (isPickerCancellation(error)) {
-        commonPrint.log('[picker] file picker cancelled by user');
         return null;
       }
       rethrow;
@@ -120,29 +114,6 @@ class Picker {
       allowedExtensions: allowedExtensions,
       bytes: bytes,
     );
-    if (system.isOhos && path != null) {
-      try {
-        final resolved = await _ohosFilePickerChannel
-            .invokeMapMethod<String, dynamic>('readForFlClash', {
-              'uri': path,
-              'withData': true,
-            });
-        final savedBytes = resolved == null
-            ? null
-            : PlatformFile.fromMap(resolved).bytes;
-        if (savedBytes != null) {
-          final archive = ZipDecoder().decodeBytes(savedBytes);
-          final entries = archive.files
-              .map((item) => '${item.name}:${item.isFile ? 'file' : 'dir'}')
-              .join(', ');
-          commonPrint.log(
-            '[zip-verify] saved archive entries=${archive.files.length} [$entries] uri=$path',
-          );
-        }
-      } catch (error) {
-        commonPrint.log('[zip-verify] saved archive inspect failed: $error');
-      }
-    }
     if (path != null && bytes == null) {
       await localFile.copy(path);
     }
@@ -154,27 +125,9 @@ class Picker {
     String? imagePath;
     PlatformFile? picked;
     if (system.isOhos) {
-      commonPrint.log('[ohos-qr] pickerConfigQRCode use file picker');
-      try {
-        picked = await pickerFile(
-          withData: true,
-          allowedExtensions: const <String>['png', 'jpg', 'jpeg', 'webp'],
-        );
-      } catch (error) {
-        final filePickerState = await app?.getLastFilePickerState();
-        commonPrint.log(
-          '[ohos-qr] pickerConfigQRCode picker error=$error state=$filePickerState',
-          logLevel: LogLevel.error,
-        );
-        rethrow;
-      }
-      final filePickerState = await app?.getLastFilePickerState();
-      commonPrint.log(
-        '[ohos-qr] pickerConfigQRCode pickerState=$filePickerState',
-      );
-      commonPrint.log(
-        '[ohos-qr] pickerConfigQRCode picked='
-        '${picked == null ? 'null' : '${picked.name} path=${picked.path} bytes=${picked.bytes?.length}'}',
+      picked = await pickerFile(
+        withData: true,
+        allowedExtensions: const <String>['png', 'jpg', 'jpeg', 'webp'],
       );
       if (picked == null) {
         return null;
@@ -188,36 +141,25 @@ class Picker {
             : '$tempPath.$suffix';
         await File(normalizedPath).safeWriteAsBytes(picked.bytes!);
         imagePath = normalizedPath;
-        commonPrint.log(
-          '[ohos-qr] pickerConfigQRCode wrote temp image path=$imagePath',
-        );
       }
     } else {
       final xFile = await ImagePicker().pickImage(source: ImageSource.gallery);
       imagePath = xFile?.path;
     }
-    commonPrint.log('[ohos-qr] pickerConfigQRCode imagePath=$imagePath');
     if (imagePath == null || imagePath.isEmpty) {
       return null;
     }
     String? result;
     if (system.isOhos) {
       result = await CoreController().decodeQrImage(imagePath);
-      commonPrint.log(
-        '[ohos-qr] pickerConfigQRCode capture=${result.isEmpty ? 0 : 1}',
-      );
     } else {
       final controller = MobileScannerController();
       final capture = await controller.analyzeImage(
         imagePath,
         formats: [BarcodeFormat.qrCode],
       );
-      commonPrint.log(
-        '[ohos-qr] pickerConfigQRCode capture=${capture?.barcodes.length}',
-      );
       result = capture?.barcodes.first.rawValue;
     }
-    commonPrint.log('[ohos-qr] pickerConfigQRCode rawResult=$result');
     if (result == null || !result.isUrl) {
       throw currentAppLocalizations.pleaseUploadValidQrcode;
     }

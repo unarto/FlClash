@@ -4,6 +4,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { EventSink, Log, MethodResult } from '@ohos/flutter_ohos';
 
 import AppPlugin from './AppPlugin';
+import { stringifyError } from './error_utils';
 import {
   decodePickedFileName,
   FilePickerInfo,
@@ -73,12 +74,17 @@ export class FilePickerDelegate {
 
   async readPickedFile(uri: string, withData: boolean, result: MethodResult): Promise<void> {
     const context = this.ability.context as common.UIAbilityContext;
-    const file = await FilePickerUtils.openFileStream(context, uri, withData);
-    if (file == null) {
-      result.error('unknown_path', 'Failed to retrieve file path', null);
-      return;
+    try {
+      const file = await FilePickerUtils.openFileStream(context, uri, withData);
+      if (file == null) {
+        result.error('unknown_path', 'Failed to retrieve file path', null);
+        return;
+      }
+      result.success(file.toMap());
+    } catch (error) {
+      Log.e(TAG, `readPickedFile failed: uri=${uri}, error=${stringifyError(error)}`);
+      result.error('read_failed', stringifyError(error), null);
     }
-    result.success(file.toMap());
   }
 
   saveFile(
@@ -97,6 +103,7 @@ export class FilePickerDelegate {
       return;
     }
     this.pendingResult = result;
+    const pendingResult = result;
     const context = this.ability.context as common.UIAbilityContext;
     const documentPicker = new picker.DocumentViewPicker(context);
     const options = new picker.DocumentSaveOptions();
@@ -108,6 +115,9 @@ export class FilePickerDelegate {
     }
     documentPicker.save(options)
       .then((saveResult: Array<string>) => {
+        if (!this.isPendingResultActive(pendingResult)) {
+          return;
+        }
         if (!saveResult || saveResult.length === 0) {
           this.finishWithError('cancelled', 'Save cancelled');
           return;
@@ -120,6 +130,9 @@ export class FilePickerDelegate {
         this.finishWithSavePath(finalPath);
       })
       .catch((error: BusinessError) => {
+        if (!this.isPendingResultActive(pendingResult)) {
+          return;
+        }
         this.finishWithError(String(error.code), error.message);
       });
   }
@@ -128,7 +141,19 @@ export class FilePickerDelegate {
     this.eventSink = eventSink;
   }
 
+  cancelPendingResult(code: string, message: string): void {
+    if (this.pendingResult === null) {
+      return;
+    }
+    this.finishWithError(code, message);
+  }
+
+  private isPendingResultActive(result: MethodResult | null): boolean {
+    return result !== null && this.pendingResult === result;
+  }
+
   private openPicker(): void {
+    const pendingResult = this.pendingResult;
     const context = this.ability.context as common.UIAbilityContext;
     const documentPicker = new picker.DocumentViewPicker(context);
     const options = new picker.DocumentSelectOptions();
@@ -144,16 +169,23 @@ export class FilePickerDelegate {
     documentPicker.select(options)
       .then((uris: Array<string>) => {
         setTimeout(() => {
-          void this.handlePickedUris(uris);
+          if (pendingResult === null || !this.isPendingResultActive(pendingResult)) {
+            return;
+          }
+          void this.handlePickedUris(pendingResult, uris);
         }, 300);
       })
       .catch((error: BusinessError) => {
-        Log.e(TAG, `DocumentViewPicker.select failed: ${JSON.stringify(error)}`);
+        if (!this.isPendingResultActive(pendingResult)) {
+          return;
+        }
+        Log.e(TAG, `DocumentViewPicker.select failed: ${stringifyError(error)}`);
         this.finishWithError(String(error.code), error.message);
       });
   }
 
   private openPickerUrisOnly(initialDirectory: string): void {
+    const pendingResult = this.pendingResult;
     Log.i(TAG, 'openPickerUrisOnly begin');
     const context = this.ability.context as common.UIAbilityContext;
     const documentPicker = new picker.DocumentViewPicker(context);
@@ -172,6 +204,9 @@ export class FilePickerDelegate {
     }
     documentPicker.select(options)
       .then(async (uris: Array<string>) => {
+        if (!this.isPendingResultActive(pendingResult)) {
+          return;
+        }
         Log.i(TAG, `openPickerUrisOnly success count=${uris?.length ?? 0}`);
         AppPlugin.setLastFilePickerState(
           `documentPicker:success:count=${uris?.length ?? 0}:uris=${JSON.stringify(uris ?? [])}`,
@@ -192,7 +227,10 @@ export class FilePickerDelegate {
         this.finishWithSuccess(files);
       })
       .catch((error: BusinessError) => {
-        Log.e(TAG, `DocumentViewPicker.select uris-only failed: ${JSON.stringify(error)}`);
+        if (!this.isPendingResultActive(pendingResult)) {
+          return;
+        }
+        Log.e(TAG, `DocumentViewPicker.select uris-only failed: ${stringifyError(error)}`);
         AppPlugin.setLastFilePickerState(
           `documentPicker:error:code=${error.code}:message=${error.message}`,
         );
@@ -200,7 +238,10 @@ export class FilePickerDelegate {
       });
   }
 
-  private async handlePickedUris(uris: Array<string>): Promise<void> {
+  private async handlePickedUris(result: MethodResult, uris: Array<string>): Promise<void> {
+    if (!this.isPendingResultActive(result)) {
+      return;
+    }
     if (!uris || uris.length === 0) {
       this.finishWithError('cancelled', 'No file selected');
       return;
@@ -208,9 +249,18 @@ export class FilePickerDelegate {
     const context = this.ability.context as common.UIAbilityContext;
     const files: Array<FilePickerPayload> = [];
     for (const uri of uris) {
-      const file = await FilePickerUtils.openFileStream(context, uri, this.withData);
-      if (file) {
-        files.push(file.toMap());
+      if (!this.isPendingResultActive(result)) {
+        return;
+      }
+      try {
+        const file = await FilePickerUtils.openFileStream(context, uri, this.withData);
+        if (file) {
+          files.push(file.toMap());
+        }
+      } catch (error) {
+        Log.e(TAG, `handlePickedUris failed: uri=${uri}, error=${stringifyError(error)}`);
+        this.finishWithError('read_failed', stringifyError(error));
+        return;
       }
     }
     if (files.length === 0) {
@@ -228,6 +278,9 @@ export class FilePickerDelegate {
   }
 
   private finishWithSuccess(files: Array<FilePickerPayload>): void {
+    if (this.pendingResult === null) {
+      return;
+    }
     this.dispatchEventStatus(false);
     AppPlugin.setLastFilePickerState(
       `finish:success:files=${JSON.stringify(files)}`,
@@ -237,12 +290,18 @@ export class FilePickerDelegate {
   }
 
   private finishWithSavePath(path: string): void {
+    if (this.pendingResult === null) {
+      return;
+    }
     this.dispatchEventStatus(false);
     this.pendingResult?.success(path);
     this.pendingResult = null;
   }
 
   private finishWithError(code: string, message: string): void {
+    if (this.pendingResult === null) {
+      return;
+    }
     this.dispatchEventStatus(false);
     AppPlugin.setLastFilePickerState(`finish:error:code=${code}:message=${message}`);
     this.pendingResult?.error(code, message, null);

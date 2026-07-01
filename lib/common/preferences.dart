@@ -4,24 +4,37 @@ import 'dart:io';
 
 import 'package:fl_clash/models/models.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'common.dart';
 
 class Preferences {
   static Preferences? _instance;
+  final bool _isOhos;
+  final Future<void> Function() _ensureOhosPaths;
   Completer<SharedPreferences?> sharedPreferencesCompleter = Completer();
   Completer<File?> fileStoreCompleter = Completer();
 
   Future<bool> get isInit async {
-    if (system.isOhos) {
+    if (_isOhos) {
+      await _ensureOhosPaths();
       return await fileStoreCompleter.future != null;
     }
     return await sharedPreferencesCompleter.future != null;
   }
 
-  Preferences._internal() {
-    if (system.isOhos) {
+  Preferences._internal({
+    bool? isOhos,
+    Future<void> Function()? ensureOhosPaths,
+    File? ohosFileStore,
+  }) : _isOhos = isOhos ?? system.isOhos,
+       _ensureOhosPaths = ensureOhosPaths ?? appPath.initOhosPaths {
+    if (_isOhos) {
       sharedPreferencesCompleter.complete(null);
+      if (ohosFileStore != null) {
+        fileStoreCompleter.complete(ohosFileStore);
+        return;
+      }
       appPath.sharedPreferencesPath
           .then((path) async {
             final file = File(path);
@@ -42,13 +55,38 @@ class Preferences {
     fileStoreCompleter.complete(null);
   }
 
+  @visibleForTesting
+  Preferences.testOhos({
+    required Future<void> Function() ensureOhosPaths,
+    File? fileStore,
+  }) : this._internal(
+         isOhos: true,
+         ensureOhosPaths: ensureOhosPaths,
+         ohosFileStore: fileStore,
+       );
+
+  @visibleForTesting
+  Preferences.testOhosWithFileStore({
+    required Future<void> Function() ensureOhosPaths,
+    required File fileStore,
+  }) : _isOhos = true,
+       _ensureOhosPaths = ensureOhosPaths {
+    sharedPreferencesCompleter.complete(null);
+    fileStoreCompleter.complete(fileStore);
+  }
+
+  @visibleForTesting
+  static void resetInstance() {
+    _instance = null;
+  }
+
   factory Preferences() {
     _instance ??= Preferences._internal();
     return _instance!;
   }
 
   Future<int> getVersion() async {
-    if (system.isOhos) {
+    if (_isOhos) {
       final configMap = await _readFileStore();
       return configMap['version'] as int? ?? 0;
     }
@@ -57,7 +95,7 @@ class Preferences {
   }
 
   Future<void> setVersion(int version) async {
-    if (system.isOhos) {
+    if (_isOhos) {
       final configMap = await _readFileStore();
       configMap['version'] = version;
       await _writeFileStore(configMap);
@@ -68,7 +106,7 @@ class Preferences {
   }
 
   Future<void> saveShareState(SharedState shareState) async {
-    if (system.isOhos) {
+    if (_isOhos) {
       final configMap = await _readFileStore();
       configMap['sharedState'] = json.encode(shareState);
       await _writeFileStore(configMap);
@@ -80,7 +118,7 @@ class Preferences {
 
   Future<Map<String, Object?>?> getConfigMap() async {
     try {
-      if (system.isOhos) {
+      if (_isOhos) {
         final configMap = await _readFileStore();
         final configString = configMap[configKey] as String?;
         if (configString == null) return null;
@@ -98,7 +136,7 @@ class Preferences {
 
   Future<Map<String, Object?>?> getClashConfigMap() async {
     try {
-      if (system.isOhos) {
+      if (_isOhos) {
         final configMap = await _readFileStore();
         final clashConfigString = configMap[clashConfigKey] as String?;
         if (clashConfigString == null) return null;
@@ -115,7 +153,7 @@ class Preferences {
 
   Future<void> clearClashConfig() async {
     try {
-      if (system.isOhos) {
+      if (_isOhos) {
         final configMap = await _readFileStore();
         configMap.remove(clashConfigKey);
         await _writeFileStore(configMap);
@@ -134,11 +172,11 @@ class Preferences {
     if (configMap == null) {
       return null;
     }
-    return Config.fromJson(configMap);
+    return Config.realFromJson(configMap);
   }
 
   Future<bool> saveConfig(Config config) async {
-    if (system.isOhos) {
+    if (_isOhos) {
       final configMap = await _readFileStore();
       configMap[configKey] = json.encode(config);
       await _writeFileStore(configMap);
@@ -158,7 +196,7 @@ class Preferences {
   }
 
   Future<void> clearPreferences() async {
-    if (system.isOhos) {
+    if (_isOhos) {
       await _writeFileStore({});
       return;
     }
@@ -167,6 +205,7 @@ class Preferences {
   }
 
   Future<Map<String, Object?>> _readFileStore() async {
+    await _ensureOhosFileStoreReady();
     final file = await fileStoreCompleter.future;
     if (file == null || !await file.exists()) {
       return {};
@@ -179,12 +218,19 @@ class Preferences {
   }
 
   Future<void> _writeFileStore(Map<String, Object?> data) async {
+    await _ensureOhosFileStoreReady();
     final file = await fileStoreCompleter.future;
     if (file == null) {
       return;
     }
     await file.parent.create(recursive: true);
     await file.writeAsString(json.encode(data));
+  }
+
+  Future<void> _ensureOhosFileStoreReady() async {
+    if (_isOhos) {
+      await _ensureOhosPaths();
+    }
   }
 }
 

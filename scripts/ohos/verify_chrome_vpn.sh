@@ -52,12 +52,12 @@ Environment:
   OUT_DIR                 Output directory for log artifacts. Default: .ohos_live
 
 What this verifies:
-  1. Force-stop FlClash, Chrome, and com.huawei.shell_assistant, then clear Chrome-host app data.
+  1. Force-stop FlClash, Chrome, and the configured Chrome host bundle, then clear Chrome-host app data.
   2. Launch FlClash and start the VPN from the dashboard.
   3. Launch Chrome itself without a URI redirect.
   4. Focus the Chrome address bar, type the target URL, and submit it inside Chrome.
-  5. Trigger Chrome page traffic by tapping known YouTube-related resume targets when present.
-  5. Capture vpn-tun counters plus mission/log evidence for the Chrome + shell-assistant compat path.
+  5. Trigger Chrome page traffic using the configured URI host, with YouTube-only fallbacks kept for the default target family.
+  6. Capture vpn-tun counters plus mission/log evidence for the current Chrome host-bundle path.
 EOF
 }
 
@@ -87,6 +87,7 @@ resolve_target() {
   local targets=()
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
+    [[ "$target" == "[Empty]" ]] && continue
     targets+=("$target")
   done < <("$HDC_BIN" list targets 2>/dev/null || true)
 
@@ -101,6 +102,24 @@ run_hdc() {
   local target="$1"
   shift
   "$HDC_BIN" -t "$target" "$@"
+}
+
+resolve_uri_host() {
+  local uri="$1"
+  node -e '
+const raw = process.argv[1] ?? "";
+if (!raw) {
+  process.exit(0);
+}
+try {
+  const normalized = raw.includes("://") ? raw : `https://${raw}`;
+  process.stdout.write(new URL(normalized).host);
+} catch (_) {}
+' "$uri"
+}
+
+escape_ere() {
+  printf '%s' "$1" | sed -e 's/[][(){}.^$+*?|\\]/\\&/g'
 }
 
 try_tap_chrome_target() {
@@ -128,7 +147,23 @@ main() {
   local chrome_bundle="${CHROME_BUNDLE:-$DEFAULT_CHROME_BUNDLE}"
   local chrome_ability="${CHROME_ABILITY:-$DEFAULT_CHROME_ABILITY}"
   local chrome_uri="${CHROME_URI:-$DEFAULT_CHROME_URI}"
+  local chrome_uri_host
+  chrome_uri_host=$(resolve_uri_host "$chrome_uri")
+  local chrome_uri_probe="$chrome_uri_host"
+  if [[ "$chrome_uri_probe" == www.* ]]; then
+    chrome_uri_probe="${chrome_uri_probe#www.}"
+  fi
   local shell_assistant_bundle="${SHELL_ASSISTANT_BUNDLE:-$DEFAULT_SHELL_ASSISTANT_BUNDLE}"
+  local chrome_bundle_pattern
+  chrome_bundle_pattern=$(escape_ere "$chrome_bundle")
+  local chrome_uri_host_pattern
+  chrome_uri_host_pattern=$(escape_ere "$chrome_uri_host")
+  local shell_assistant_bundle_pattern
+  shell_assistant_bundle_pattern=$(escape_ere "$shell_assistant_bundle")
+  local chrome_uri_is_youtube=0
+  if [[ "$chrome_uri_host" == *"youtube.com"* || "$chrome_uri_host" == *"youtu.be"* ]]; then
+    chrome_uri_is_youtube=1
+  fi
   local flclash_bundle="${FLCLASH_BUNDLE:-$DEFAULT_FLCLASH_BUNDLE}"
   local flclash_ability="${FLCLASH_ABILITY:-$DEFAULT_FLCLASH_ABILITY}"
   local chrome_url_bar_x="${CHROME_URL_BAR_X:-$DEFAULT_CHROME_URL_BAR_X}"
@@ -153,6 +188,10 @@ main() {
   startup_log_pattern=$(node "$LOG_PATTERN_SCRIPT" startup)
   local chrome_log_pattern
   chrome_log_pattern=$(node "$LOG_PATTERN_SCRIPT" chrome)
+  chrome_log_pattern="${chrome_log_pattern}|${chrome_bundle_pattern}|${shell_assistant_bundle_pattern}"
+  if [[ -n "$chrome_uri_host_pattern" ]]; then
+    chrome_log_pattern="${chrome_log_pattern}|${chrome_uri_host_pattern}"
+  fi
 
   HDC_TARGET="$target" bash "$KEEP_AWAKE_SCRIPT" >/dev/null
 
@@ -170,6 +209,7 @@ main() {
     echo "chrome_bundle=$chrome_bundle"
     echo "chrome_ability=$chrome_ability"
     echo "chrome_uri=$chrome_uri"
+    echo "chrome_uri_host=$chrome_uri_host"
     echo "shell_assistant_bundle=$shell_assistant_bundle"
     echo "flclash_bundle=$flclash_bundle"
     echo "flclash_ability=$flclash_ability"
@@ -194,7 +234,7 @@ main() {
     echo
 
     echo "=== vpn startup diagnostic logs ==="
-    run_hdc "$target" shell "hilog -x | grep -E '$startup_log_pattern' | tail -n 320"
+    run_hdc "$target" shell "hilog -x | grep -E '$startup_log_pattern' | tail -n 320 || true"
     echo
 
     echo "=== launch Chrome ==="
@@ -225,7 +265,11 @@ main() {
       read -r submit_x submit_y <<<"$submit_point"
       run_hdc "$target" shell "uitest uiInput click $submit_x $submit_y"
       submitted_target="chrome-search-candidate"
-    elif try_tap_chrome_target "$target" "www.youtube.com" exact; then
+    elif [[ -n "$chrome_uri_host" ]] && try_tap_chrome_target "$target" "$chrome_uri_host" exact; then
+      submitted_target="$chrome_uri_host"
+    elif [[ -n "$chrome_uri_probe" ]] && try_tap_chrome_target "$target" "$chrome_uri_probe" contains; then
+      submitted_target="$chrome_uri_probe"
+    elif (( chrome_uri_is_youtube )) && try_tap_chrome_target "$target" "www.youtube.com" exact; then
       submitted_target="www.youtube.com"
     elif try_tap_chrome_target "$target" "$chrome_uri" exact; then
       submitted_target="$chrome_uri"
@@ -242,9 +286,13 @@ main() {
 
     echo "=== trigger Chrome page traffic ==="
     local tapped_target="none"
-    if try_tap_chrome_target "$target" "YouTube" contains; then
+    if [[ -n "$chrome_uri_host" ]] && try_tap_chrome_target "$target" "$chrome_uri_host" contains; then
+      tapped_target="$chrome_uri_host"
+    elif [[ -n "$chrome_uri_probe" ]] && try_tap_chrome_target "$target" "$chrome_uri_probe" contains; then
+      tapped_target="$chrome_uri_probe"
+    elif (( chrome_uri_is_youtube )) && try_tap_chrome_target "$target" "YouTube" contains; then
       tapped_target="YouTube"
-    elif try_tap_chrome_target "$target" "m.youtube.com" contains; then
+    elif (( chrome_uri_is_youtube )) && try_tap_chrome_target "$target" "m.youtube.com" contains; then
       tapped_target="m.youtube.com"
     fi
     echo "tapped_target=$tapped_target"
@@ -263,11 +311,11 @@ main() {
     echo
 
     echo "=== mission dump ==="
-    run_hdc "$target" shell "aa dump -a | grep -n -A8 -B2 '$chrome_bundle\\|$shell_assistant_bundle'"
+    run_hdc "$target" shell "aa dump -a | grep -n -A8 -B2 '$chrome_bundle_pattern|$shell_assistant_bundle_pattern' || true"
     echo
 
     echo "=== key logs ==="
-    run_hdc "$target" shell "hilog -x | grep -E '$chrome_log_pattern' | tail -n 320"
+    run_hdc "$target" shell "hilog -x | grep -E '$chrome_log_pattern' | tail -n 320 || true"
   } | tee "$log_file"
 
   echo

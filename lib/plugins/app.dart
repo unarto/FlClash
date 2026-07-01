@@ -11,6 +11,7 @@ class App {
   late MethodChannel methodChannel;
   Function()? onExit;
   Future<void> Function(String link)? onAppLink;
+  Future<void> Function(Map<String, dynamic>?)? onPendingDebugVpnStart;
 
   App._internal() {
     methodChannel = const MethodChannel('$packageName/app');
@@ -20,6 +21,15 @@ class App {
           final link = call.arguments as String? ?? '';
           if (onAppLink != null && link.isNotEmpty) {
             await onAppLink!(link);
+            return;
+          }
+          throw MissingPluginException();
+        case 'pendingDebugVpnStart':
+          final pending = call.arguments == null
+              ? null
+              : Map<String, dynamic>.from(call.arguments as Map);
+          if (onPendingDebugVpnStart != null) {
+            await onPendingDebugVpnStart!(pending);
             return;
           }
           throw MissingPluginException();
@@ -58,6 +68,10 @@ class App {
     return methodChannel.invokeMethod<String>('consumePendingLink');
   }
 
+  Future<bool?> updateAppLinkListenerReady(bool value) {
+    return methodChannel.invokeMethod<bool>('updateAppLinkListenerReady', value);
+  }
+
   Future<int?> startCoreChildProcess(String entryParams) {
     return methodChannel.invokeMethod<int>('startCoreChildProcess', {
       'entryParams': entryParams,
@@ -83,6 +97,10 @@ class App {
     });
   }
 
+  Future<bool?> stopTrackedCore() {
+    return methodChannel.invokeMethod<bool>('stopTrackedCore');
+  }
+
   Future<String?> invokeCore(String action) {
     return methodChannel.invokeMethod<String>('invokeCore', {'action': action});
   }
@@ -94,7 +112,6 @@ class App {
   Future<bool?> startVpn({
     required String stack,
     required bool ipv6,
-    required bool allowBypass,
     required String initParamsJson,
     required String setupParamsJson,
     required String coreSocketPath,
@@ -102,7 +119,6 @@ class App {
     return methodChannel.invokeMethod<bool>('startVpn', {
       'stack': stack,
       'ipv6': ipv6,
-      'allowBypass': allowBypass,
       'initParamsJson': initParamsJson,
       'setupParamsJson': setupParamsJson,
       'coreSocketPath': coreSocketPath,
@@ -125,6 +141,13 @@ class App {
       return Map<String, dynamic>.from(result);
     }
     return null;
+  }
+
+  Future<bool?> updatePendingDebugVpnStartListenerReady(bool value) {
+    return methodChannel.invokeMethod<bool>(
+      'updatePendingDebugVpnStartListenerReady',
+      value,
+    );
   }
 
   Future<bool?> markExecutable(String path) {
@@ -163,6 +186,10 @@ class App {
 
   Future<String?> getLastImportedGalleryUri() {
     return methodChannel.invokeMethod<String>('getLastImportedGalleryUri');
+  }
+
+  Future<String?> getLastImportedGalleryIdentifier() {
+    return methodChannel.invokeMethod<String>('getLastImportedGalleryIdentifier');
   }
 
   Future<String?> getLastFilePickerState() {

@@ -8,6 +8,7 @@ import { UIAbility } from '@kit.AbilityKit';
 import pasteboard from '@ohos.pasteboard';
 import {
   AbilityPluginBinding,
+  Any,
   FlutterPlugin,
   FlutterPluginBinding,
   MethodCall,
@@ -15,6 +16,9 @@ import {
   MethodChannel,
   MethodResult,
 } from '@ohos/flutter_ohos';
+import { stringifyError } from './error_utils';
+import { resolveVpnStartResult } from './vpn_start_decision';
+import { resolveVpnStopResult } from './vpn_stop_decision';
 
 interface NativeBridge {
   invokeCore(action: string): string;
@@ -29,6 +33,7 @@ interface NativeBridge {
     logDirPath: string,
   ): number;
   startEmbeddedCore(socketPath: string, logDirPath: string): number;
+  stopTrackedCore(): boolean;
   startTun(fd: number, stack: string, address: string, dns: string): boolean;
   stopTun(): boolean;
   lastError(): string;
@@ -37,21 +42,10 @@ interface NativeBridge {
 interface PendingDebugVpnStart {
   stack: string;
   ipv6: boolean;
-  allowBypass: boolean;
 }
 
 const nativeBridge = loadNativeModule('libentry.so') as NativeBridge;
 const VPN_STATUS_FILE_NAME = 'flclash-vpn-status.txt';
-
-function stringifyError(error: Object): string {
-  try {
-    const value = JSON.stringify(error);
-    if (value && value !== 'undefined') {
-      return value;
-    }
-  } catch (_) {}
-  return `${error}`;
-}
 
 function readAllBytes(path: string): Uint8Array {
   const stat = fs.statSync(path);
@@ -114,8 +108,16 @@ async function prepareWritePermission(uri: string): Promise<void> {
 }
 
 export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
-  private static pendingLink: string = '';
-  private static pendingDebugVpnStart: PendingDebugVpnStart | null = null;
+  private static pendingLinks: string[] = [];
+  private static appLinkListenerReady = false;
+  private static pendingLinkDeliveryInFlight = false;
+  private static pendingLinkInFlightValue: string = '';
+  private static pendingLinkDeliveryId = 0;
+  private static pendingDebugVpnStarts: PendingDebugVpnStart[] = [];
+  private static pendingDebugVpnStartListenerReady = false;
+  private static pendingDebugVpnStartDeliveryInFlight = false;
+  private static pendingDebugVpnStartInFlightValue: PendingDebugVpnStart | null = null;
+  private static pendingDebugVpnStartDeliveryId = 0;
   private static activeChannel: MethodChannel | null = null;
   private static lastImportedGalleryUri: string = '';
   private static lastImportedGalleryIdentifier: string = '';
@@ -127,6 +129,7 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
   private ability: UIAbility | null = null;
   private applicationContext: common.Context | null = null;
   private isVpnRunning = false;
+  private vpnStartInFlight = false;
 
   private getVpnStatusPath(context: common.Context): string {
     return `${context.filesDir}/${VPN_STATUS_FILE_NAME}`;
@@ -146,11 +149,32 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
     }
   }
 
+  private isVpnStatusRunning(context: common.Context | null): boolean {
+    if (context == null) {
+      return this.isVpnRunning;
+    }
+    const status = this.readVpnStatus(this.getVpnStatusPath(context));
+    return status === 'started' || (status.length === 0 && this.isVpnRunning);
+  }
+
   private async waitForVpnStatus(path: string): Promise<string> {
     for (let index = 0; index < 30; index += 1) {
       const status = this.readVpnStatus(path);
       if (
         status === 'started' ||
+        status.startsWith('failed:')
+      ) {
+        return status;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+    return this.readVpnStatus(path);
+  }
+
+  private async waitForVpnStoppedStatus(path: string): Promise<string> {
+    for (let index = 0; index < 30; index += 1) {
+      const status = this.readVpnStatus(path);
+      if (
         status === 'stopped' ||
         status.startsWith('failed:')
       ) {
@@ -159,6 +183,14 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
     }
     return this.readVpnStatus(path);
+  }
+
+  private shouldRetryFailedVpnStopStatus(status: string): boolean {
+    return (
+      status.includes('stopTun failed:') ||
+      status.includes('stopTrackedCore failed:') ||
+      status.includes('destroy failed:')
+    );
   }
 
   private async withTimeout<T>(
@@ -174,10 +206,144 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
     ]) as T;
   }
 
+  private static deliverPendingLinkIfReady(): void {
+    if (
+      AppPlugin.pendingLinks.length === 0 ||
+      !AppPlugin.appLinkListenerReady ||
+      AppPlugin.activeChannel == null ||
+      AppPlugin.pendingLinkDeliveryInFlight
+    ) {
+      return;
+    }
+    const link = AppPlugin.pendingLinks[0];
+    if (link == null) {
+      return;
+    }
+    const deliveryId = AppPlugin.pendingLinkDeliveryId + 1;
+    AppPlugin.pendingLinkDeliveryId = deliveryId;
+    AppPlugin.pendingLinkDeliveryInFlight = true;
+    AppPlugin.pendingLinkInFlightValue = link;
+    AppPlugin.activeChannel.invokeMethod('appLink', link, {
+      success: () => {
+        if (AppPlugin.pendingLinkDeliveryId !== deliveryId) {
+          return;
+        }
+        AppPlugin.pendingLinkDeliveryInFlight = false;
+        AppPlugin.pendingLinkInFlightValue = '';
+        if (AppPlugin.pendingLinks.length > 0 && AppPlugin.pendingLinks[0] === link) {
+          AppPlugin.pendingLinks.shift();
+        }
+        if (AppPlugin.pendingLinks.length > 0) {
+          AppPlugin.deliverPendingLinkIfReady();
+        }
+      },
+      error: (code: string, message: string, details: Any) => {
+        if (AppPlugin.pendingLinkDeliveryId !== deliveryId) {
+          return;
+        }
+        AppPlugin.pendingLinkDeliveryInFlight = false;
+        AppPlugin.pendingLinkInFlightValue = '';
+        if (
+          AppPlugin.pendingLinks.length > 0 &&
+          AppPlugin.pendingLinks[0] !== link
+        ) {
+          AppPlugin.deliverPendingLinkIfReady();
+        }
+        console.warn(
+          `[AppPlugin] appLink delivery failed code=${code} message=${message} details=${stringifyError(details)}`,
+        );
+      },
+      notImplemented: () => {
+        if (AppPlugin.pendingLinkDeliveryId !== deliveryId) {
+          return;
+        }
+        AppPlugin.pendingLinkDeliveryInFlight = false;
+        AppPlugin.pendingLinkInFlightValue = '';
+        if (
+          AppPlugin.pendingLinks.length > 0 &&
+          AppPlugin.pendingLinks[0] !== link
+        ) {
+          AppPlugin.deliverPendingLinkIfReady();
+        }
+        console.warn('[AppPlugin] appLink delivery not implemented by Flutter');
+      },
+    });
+  }
+
+  private static deliverPendingDebugVpnStartIfReady(): void {
+    if (
+      AppPlugin.pendingDebugVpnStarts.length === 0 ||
+      !AppPlugin.pendingDebugVpnStartListenerReady ||
+      AppPlugin.activeChannel == null ||
+      AppPlugin.pendingDebugVpnStartDeliveryInFlight
+    ) {
+      return;
+    }
+    const pendingDebugVpnStart = AppPlugin.pendingDebugVpnStarts[0];
+    if (pendingDebugVpnStart == null) {
+      return;
+    }
+    const deliveryId = AppPlugin.pendingDebugVpnStartDeliveryId + 1;
+    AppPlugin.pendingDebugVpnStartDeliveryId = deliveryId;
+    AppPlugin.pendingDebugVpnStartDeliveryInFlight = true;
+    AppPlugin.pendingDebugVpnStartInFlightValue = pendingDebugVpnStart;
+    AppPlugin.activeChannel.invokeMethod('pendingDebugVpnStart', {
+      stack: pendingDebugVpnStart.stack,
+      ipv6: pendingDebugVpnStart.ipv6,
+    }, {
+      success: () => {
+        if (AppPlugin.pendingDebugVpnStartDeliveryId !== deliveryId) {
+          return;
+        }
+        AppPlugin.pendingDebugVpnStartDeliveryInFlight = false;
+        AppPlugin.pendingDebugVpnStartInFlightValue = null;
+        if (
+          AppPlugin.pendingDebugVpnStarts.length > 0 &&
+          AppPlugin.pendingDebugVpnStarts[0] === pendingDebugVpnStart
+        ) {
+          AppPlugin.pendingDebugVpnStarts.shift();
+        }
+        if (AppPlugin.pendingDebugVpnStarts.length > 0) {
+          AppPlugin.deliverPendingDebugVpnStartIfReady();
+        }
+      },
+      error: (code: string, message: string, details: Any) => {
+        if (AppPlugin.pendingDebugVpnStartDeliveryId !== deliveryId) {
+          return;
+        }
+        AppPlugin.pendingDebugVpnStartDeliveryInFlight = false;
+        AppPlugin.pendingDebugVpnStartInFlightValue = null;
+        if (
+          AppPlugin.pendingDebugVpnStarts.length > 0 &&
+          AppPlugin.pendingDebugVpnStarts[0] !== pendingDebugVpnStart
+        ) {
+          AppPlugin.deliverPendingDebugVpnStartIfReady();
+        }
+        console.warn(
+          `[AppPlugin] pendingDebugVpnStart delivery failed code=${code} message=${message} details=${stringifyError(details)}`,
+        );
+      },
+      notImplemented: () => {
+        if (AppPlugin.pendingDebugVpnStartDeliveryId !== deliveryId) {
+          return;
+        }
+        AppPlugin.pendingDebugVpnStartDeliveryInFlight = false;
+        AppPlugin.pendingDebugVpnStartInFlightValue = null;
+        if (
+          AppPlugin.pendingDebugVpnStarts.length > 0 &&
+          AppPlugin.pendingDebugVpnStarts[0] !== pendingDebugVpnStart
+        ) {
+          AppPlugin.deliverPendingDebugVpnStartIfReady();
+        }
+        console.warn('[AppPlugin] pendingDebugVpnStart delivery not implemented by Flutter');
+      },
+    });
+  }
+
   static setPendingLink(link: string): void {
-    AppPlugin.pendingLink = link;
+    AppPlugin.pendingLinks.push(link);
     console.info(`[AppPlugin] setPendingLink=${link}`);
-    AppPlugin.activeChannel?.invokeMethod('appLink', link);
+    AppPlugin.deliverPendingLinkIfReady();
   }
 
   static getLastImportedGalleryUri(): string {
@@ -207,30 +373,50 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
           ? params.stack
           : 'mixed';
         const ipv6 = params?.ipv6 === true;
-        const allowBypass = params?.allowBypass !== false;
         const pendingDebugVpnStart: PendingDebugVpnStart = {
           stack,
           ipv6,
-          allowBypass,
         };
-        AppPlugin.pendingDebugVpnStart = pendingDebugVpnStart;
+        AppPlugin.pendingDebugVpnStarts.push(pendingDebugVpnStart);
         console.info(
-          `[AppPlugin] setPendingDebugVpnStart stack=${stack} ipv6=${ipv6} allowBypass=${allowBypass}`,
+          `[AppPlugin] setPendingDebugVpnStart stack=${stack} ipv6=${ipv6}`,
         );
+        AppPlugin.deliverPendingDebugVpnStartIfReady();
       }
       return;
     }
     AppPlugin.setPendingLink(uri);
   }
 
+  private consumePendingLink(): string {
+    if (
+      AppPlugin.pendingLinkDeliveryInFlight &&
+      AppPlugin.pendingLinkInFlightValue.length > 0 &&
+      AppPlugin.pendingLinks[0] === AppPlugin.pendingLinkInFlightValue
+    ) {
+      return '';
+    }
+    const link = AppPlugin.pendingLinks.shift() ?? '';
+    return link;
+  }
+
   private consumePendingDebugVpnStart(): PendingDebugVpnStart | null {
-    const pending = AppPlugin.pendingDebugVpnStart;
-    AppPlugin.pendingDebugVpnStart = null;
+    if (
+      AppPlugin.pendingDebugVpnStartDeliveryInFlight &&
+      AppPlugin.pendingDebugVpnStartInFlightValue != null &&
+      AppPlugin.pendingDebugVpnStarts[0] === AppPlugin.pendingDebugVpnStartInFlightValue
+    ) {
+      return null;
+    }
+    const pending = AppPlugin.pendingDebugVpnStarts.shift() ?? null;
+    if (AppPlugin.pendingDebugVpnStarts.length > 0) {
+      AppPlugin.deliverPendingDebugVpnStartIfReady();
+    }
     return pending;
   }
 
   private tryStartPendingDebugVpn(): void {
-    if (AppPlugin.pendingDebugVpnStart == null) {
+    if (AppPlugin.pendingDebugVpnStarts.length === 0) {
       return;
     }
     console.info('[AppPlugin] pending debug VPN start is ready for Flutter consumption');
@@ -255,21 +441,36 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
     );
     AppPlugin.activeChannel = this.channel;
     this.channel.setMethodCallHandler(this);
+    AppPlugin.deliverPendingLinkIfReady();
+    AppPlugin.deliverPendingDebugVpnStartIfReady();
     this.tryStartPendingDebugVpn();
   }
 
-  onDetachedFromEngine(binding: FlutterPluginBinding): void {
+  onDetachedFromAbility(): void {
     const detachedChannel = this.channel;
     if (this.channel !== null) {
       this.channel.setMethodCallHandler(null);
       this.channel = null;
     }
-    this.pluginBinding = null;
+    AppPlugin.pendingLinkDeliveryInFlight = false;
+    AppPlugin.pendingLinkInFlightValue = '';
+    AppPlugin.appLinkListenerReady = false;
+    AppPlugin.pendingDebugVpnStartDeliveryInFlight = false;
+    AppPlugin.pendingDebugVpnStartInFlightValue = null;
+    AppPlugin.pendingDebugVpnStartListenerReady = false;
+    AppPlugin.pendingLinkDeliveryId += 1;
+    AppPlugin.pendingDebugVpnStartDeliveryId += 1;
     this.abilityBinding = null;
     this.ability = null;
     if (AppPlugin.activeChannel === detachedChannel) {
       AppPlugin.activeChannel = null;
     }
+    this.applicationContext = this.pluginBinding?.getApplicationContext() ?? null;
+  }
+
+  onDetachedFromEngine(binding: FlutterPluginBinding): void {
+    this.onDetachedFromAbility();
+    this.pluginBinding = null;
     this.applicationContext = null;
   }
 
@@ -291,9 +492,16 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         });
         return;
       case 'consumePendingLink': {
-        const link = AppPlugin.pendingLink;
-        AppPlugin.pendingLink = '';
+        const link = this.consumePendingLink();
         result.success(link);
+        return;
+      }
+      case 'updateAppLinkListenerReady': {
+        AppPlugin.appLinkListenerReady = call.args === true;
+        if (AppPlugin.appLinkListenerReady) {
+          AppPlugin.deliverPendingLinkIfReady();
+        }
+        result.success(true);
         return;
       }
       case 'exitApp': {
@@ -307,7 +515,9 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
             await abilityContext.terminateSelf();
             result.success(true);
           } catch (error) {
-            console.error(`[AppPlugin] exitApp failed error=${error}`);
+            console.error(
+              `[AppPlugin] exitApp failed error=${stringifyError(error)}`,
+            );
             result.success(false);
           }
         })();
@@ -325,7 +535,9 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
             console.info('[AppPlugin] moveTaskToBack success');
             result.success(true);
           } catch (error) {
-            console.error(`[AppPlugin] moveTaskToBack failed error=${error}`);
+            console.error(
+              `[AppPlugin] moveTaskToBack failed error=${stringifyError(error)}`,
+            );
             result.success(false);
           }
         })();
@@ -353,7 +565,7 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         } catch (error) {
           result.error(
             'START_CORE_CHILD_PROCESS_FAILED',
-            `${error}`,
+            stringifyError(error),
             nativeBridge.lastError(),
           );
         }
@@ -379,7 +591,7 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         } catch (error) {
           result.error(
             'START_BUNDLED_CORE_PROCESS_FAILED',
-            `${error}`,
+            stringifyError(error),
             nativeBridge.lastError(),
           );
         }
@@ -404,7 +616,27 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         } catch (error) {
           result.error(
             'START_EMBEDDED_CORE_FAILED',
-            `${error}`,
+            stringifyError(error),
+            nativeBridge.lastError(),
+          );
+        }
+        return;
+      }
+      case 'stopTrackedCore': {
+        try {
+          const stopped = nativeBridge.stopTrackedCore();
+          if (!stopped) {
+            console.error(
+              `[AppPlugin] stopTrackedCore failed, lastError=${nativeBridge.lastError()}`,
+            );
+          } else {
+            console.info('[AppPlugin] stopTrackedCore success');
+          }
+          result.success(stopped);
+        } catch (error) {
+          result.error(
+            'STOP_TRACKED_CORE_FAILED',
+            stringifyError(error),
             nativeBridge.lastError(),
           );
         }
@@ -422,13 +654,13 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
               );
             }
             result.success(response);
-          } catch (error) {
-            result.error(
-              'CORE_INVOKE_FAILED',
-              `${error}`,
-              nativeBridge.lastError(),
-            );
-          }
+        } catch (error) {
+          result.error(
+            'CORE_INVOKE_FAILED',
+            stringifyError(error),
+            nativeBridge.lastError(),
+          );
+        }
         })();
         return;
       }
@@ -438,7 +670,7 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         } catch (error) {
           result.error(
             'CONSUME_CORE_EVENTS_FAILED',
-            `${error}`,
+            stringifyError(error),
             nativeBridge.lastError(),
           );
         }
@@ -458,7 +690,7 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         } catch (error) {
           result.error(
             'MARK_EXECUTABLE_FAILED',
-            `${error}`,
+            stringifyError(error),
             nativeBridge.lastError(),
           );
         }
@@ -468,8 +700,6 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         const args = call.args as Map<string, Object> | null;
         const stack = (args?.get('stack') as string | undefined) ?? 'mixed';
         const ipv6 = (args?.get('ipv6') as boolean | undefined) ?? false;
-        const allowBypass =
-          (args?.get('allowBypass') as boolean | undefined) ?? true;
         const initParamsJson =
           (args?.get('initParamsJson') as string | undefined) ?? '';
         const setupParamsJson =
@@ -479,7 +709,6 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         void this.startVpn(
           stack,
           ipv6,
-          allowBypass,
           initParamsJson,
           setupParamsJson,
           coreSocketPath,
@@ -492,7 +721,7 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         return;
       }
       case 'getVpnRunning': {
-        result.success(this.isVpnRunning);
+        result.success(this.isVpnStatusRunning(this.applicationContext));
         return;
       }
       case 'consumePendingDebugVpnStart': {
@@ -504,8 +733,15 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         result.success({
           stack: pending.stack,
           ipv6: pending.ipv6,
-          allowBypass: pending.allowBypass,
         });
+        return;
+      }
+      case 'updatePendingDebugVpnStartListenerReady': {
+        AppPlugin.pendingDebugVpnStartListenerReady = call.args === true;
+        if (AppPlugin.pendingDebugVpnStartListenerReady) {
+          AppPlugin.deliverPendingDebugVpnStartIfReady();
+        }
+        result.success(true);
         return;
       }
       case 'importImageToGallery': {
@@ -540,7 +776,11 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
           fs.copyFileSync(path, targetPath);
           result.success(targetPath);
         } catch (error) {
-          result.error('PREPARE_GALLERY_TEST_IMAGE_FAILED', `${error}`, null);
+          result.error(
+            'PREPARE_GALLERY_TEST_IMAGE_FAILED',
+            stringifyError(error),
+            null,
+          );
         }
         return;
       }
@@ -574,8 +814,14 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
             );
             result.success(targetUri);
           } catch (error) {
-            AppPlugin.setLastFilePickerState(`sharedDownload:error:error=${error}`);
-            result.error('WRITE_SHARED_DOWNLOAD_FAILED', `${error}`, null);
+            AppPlugin.setLastFilePickerState(
+              `sharedDownload:error:error=${stringifyError(error)}`,
+            );
+            result.error(
+              'WRITE_SHARED_DOWNLOAD_FAILED',
+              stringifyError(error),
+              null,
+            );
           }
         })();
         return;
@@ -615,7 +861,9 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
             console.info(`[AppPlugin] openExternalUrl success url=${url}`);
             result.success(true);
           } catch (error) {
-            console.error(`[AppPlugin] openExternalUrl failed url=${url} error=${error}`);
+            console.error(
+              `[AppPlugin] openExternalUrl failed url=${url} error=${stringifyError(error)}`,
+            );
             result.success(false);
           }
         })();
@@ -633,7 +881,9 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
             console.info(`[AppPlugin] setClipboardText success length=${text.length}`);
             result.success(true);
           } catch (error) {
-            console.error(`[AppPlugin] setClipboardText failed error=${error}`);
+            console.error(
+              `[AppPlugin] setClipboardText failed error=${stringifyError(error)}`,
+            );
             result.success(false);
           }
         })();
@@ -653,7 +903,7 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
             result.success(resolvedText);
           } catch (error) {
             console.error(
-              `[AppPlugin] getClipboardText failed error=${error} fallbackLength=${AppPlugin.lastClipboardText.length}`,
+              `[AppPlugin] getClipboardText failed error=${stringifyError(error)} fallbackLength=${AppPlugin.lastClipboardText.length}`,
             );
             result.success(AppPlugin.lastClipboardText);
           }
@@ -695,25 +945,31 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
       } catch (infoError) {
         AppPlugin.lastImportedGalleryIdentifier = '';
         AppPlugin.setLastFilePickerState(
-          `gallery:imported:uri=${AppPlugin.lastImportedGalleryUri}:identifier_error=${infoError}`,
+          `gallery:imported:uri=${AppPlugin.lastImportedGalleryUri}:identifier_error=${stringifyError(infoError)}`,
         );
       }
       result.success(assetUris.length > 0 ? assetUris[0] : '');
     } catch (error) {
-      result.error('IMPORT_IMAGE_TO_GALLERY_FAILED', `${error}`, null);
+      result.error(
+        'IMPORT_IMAGE_TO_GALLERY_FAILED',
+        stringifyError(error),
+        null,
+      );
     }
   }
 
   private async startVpn(
     stack: string,
     ipv6: boolean,
-    allowBypass: boolean,
     initParamsJson: string,
     setupParamsJson: string,
     coreSocketPath: string,
     result: MethodResult,
   ): Promise<void> {
-    if (this.isVpnRunning) {
+    if (
+      this.isVpnStatusRunning(this.ability?.context ?? this.applicationContext)
+    ) {
+      this.isVpnRunning = true;
       result.success(true);
       return;
     }
@@ -722,8 +978,24 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
       result.error('NO_ABILITY_CONTEXT', 'UI ability context unavailable', null);
       return;
     }
+    const statusPath = this.getVpnStatusPath(abilityContext);
+    let ownsStartAttempt = false;
     try {
-      const statusPath = this.getVpnStatusPath(abilityContext);
+      if (this.vpnStartInFlight) {
+        const status = await this.waitForVpnStatus(statusPath);
+        const resolution = resolveVpnStartResult({
+          startErrorMessage: '',
+          status,
+        });
+        if (!resolution.started) {
+          throw new Error(resolution.errorMessage);
+        }
+        this.isVpnRunning = true;
+        result.success(true);
+        return;
+      }
+      this.vpnStartInFlight = true;
+      ownsStartAttempt = true;
       this.resetVpnStatus(statusPath);
       const want: Want = {
         bundleName: 'com.follow.clash',
@@ -731,27 +1003,31 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         parameters: {
           stack,
           ipv6,
-          allowBypass,
           initParamsJson,
           setupParamsJson,
           coreSocketPath,
         },
       };
       console.info(
-        `[AppPlugin] startVpn stack=${stack} ipv6=${ipv6} allowBypass=${allowBypass}`,
+        `[AppPlugin] startVpn stack=${stack} ipv6=${ipv6}`,
       );
-      await this.withTimeout(
-        vpnExtension.startVpnExtensionAbility(want),
-        3000,
-        'startVpnExtensionAbility timeout',
-      );
-      const status = await this.waitForVpnStatus(statusPath);
-      if (status !== 'started') {
-        throw new Error(
-          status
-            ? `vpn extension not ready: ${status}`
-            : 'vpn extension not ready',
+      let startErrorMessage = '';
+      try {
+        await this.withTimeout(
+          vpnExtension.startVpnExtensionAbility(want),
+          3000,
+          'startVpnExtensionAbility timeout',
         );
+      } catch (error) {
+        startErrorMessage = stringifyError(error);
+      }
+      const status = await this.waitForVpnStatus(statusPath);
+      const resolution = resolveVpnStartResult({
+        startErrorMessage,
+        status,
+      });
+      if (!resolution.started) {
+        throw new Error(resolution.errorMessage);
       }
       this.isVpnRunning = true;
       result.success(true);
@@ -768,35 +1044,107 @@ export default class AppPlugin implements FlutterPlugin, MethodCallHandler {
         normalizedMessage,
         nativeBridge.lastError(),
       );
+    } finally {
+      if (ownsStartAttempt) {
+        this.vpnStartInFlight = false;
+      }
     }
   }
 
   private async stopVpn(result: MethodResult): Promise<void> {
-    if (!this.isVpnRunning) {
+    const statusPath = this.applicationContext == null
+      ? ''
+      : this.getVpnStatusPath(this.applicationContext);
+    const vpnRunning = this.isVpnStatusRunning(this.applicationContext);
+    let currentStatus = statusPath.length > 0
+      ? this.readVpnStatus(statusPath)
+      : '';
+    if (currentStatus.length === 0 && this.vpnStartInFlight) {
+      currentStatus = await this.waitForVpnStatus(statusPath);
+      if (currentStatus.startsWith('failed:')) {
+        this.isVpnRunning = false;
+        result.success(true);
+        return;
+      }
+    }
+    if (
+      currentStatus === 'stopped' ||
+      (currentStatus.length === 0 && !vpnRunning && !this.vpnStartInFlight)
+    ) {
+      if (currentStatus === 'stopped') {
+        this.isVpnRunning = false;
+      }
       result.success(true);
       return;
     }
+    if (currentStatus.startsWith('failed:')) {
+      if (!this.shouldRetryFailedVpnStopStatus(currentStatus)) {
+        this.isVpnRunning = false;
+        result.success(true);
+        return;
+      }
+      this.resetVpnStatus(statusPath);
+    }
+    this.isVpnRunning = true;
     try {
-      const statusPath = this.getVpnStatusPath(this.applicationContext!);
       const want: Want = {
         bundleName: 'com.follow.clash',
         abilityName: 'FlClashVpnAbility',
       };
-      await vpnExtension.stopVpnExtensionAbility(want);
-      this.resetVpnStatus(statusPath);
+      let stopErrorMessage = '';
+      try {
+        await this.withTimeout(
+          vpnExtension.stopVpnExtensionAbility(want),
+          3000,
+          'stopVpnExtensionAbility timeout',
+        );
+      } catch (error) {
+        stopErrorMessage = stringifyError(error);
+      }
+      const status = await this.waitForVpnStoppedStatus(statusPath);
+      const resolution = resolveVpnStopResult({
+        stopErrorMessage,
+        status,
+      });
+      if (!resolution.stopped) {
+        throw new Error(resolution.errorMessage);
+      }
       this.isVpnRunning = false;
       result.success(true);
     } catch (error) {
-      console.error(
-        `[AppPlugin] stopVpn failed error=${stringifyError(error)} lastError=${nativeBridge.lastError()}`,
-      );
+      const cleanupErrors: string[] = [];
       try {
-        nativeBridge.stopTun();
-      } catch (_) {}
-      this.isVpnRunning = false;
+        const stopped = nativeBridge.stopTun();
+        if (!stopped) {
+          cleanupErrors.push(`stopTun failed: ${nativeBridge.lastError()}`);
+        }
+      } catch (cleanupError) {
+        cleanupErrors.push(`stopTun failed: ${stringifyError(cleanupError)}`);
+      }
+      try {
+        const stopped = nativeBridge.stopTrackedCore();
+        if (!stopped) {
+          cleanupErrors.push(`stopTrackedCore failed: ${nativeBridge.lastError()}`);
+        }
+      } catch (cleanupError) {
+        cleanupErrors.push(
+          `stopTrackedCore failed: ${stringifyError(cleanupError)}`,
+        );
+      }
+      const errorMessage = cleanupErrors.length > 0
+        ? `${stringifyError(error)} | ${cleanupErrors.join(' | ')}`
+        : stringifyError(error);
+      console.error(
+        `[AppPlugin] stopVpn failed error=${errorMessage} lastError=${nativeBridge.lastError()}`,
+      );
+      if (cleanupErrors.length > 0) {
+        this.isVpnRunning = true;
+      } else {
+        this.isVpnRunning = false;
+      }
       result.error(
         'STOP_VPN_FAILED',
-        stringifyError(error),
+        errorMessage,
         nativeBridge.lastError(),
       );
     }

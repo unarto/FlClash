@@ -5,6 +5,12 @@ import 'package:fl_clash/state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+bool shouldOptimisticallyAnimateDashboardStartButton({
+  required bool isOhos,
+}) {
+  return !isOhos;
+}
+
 class StartButton extends ConsumerStatefulWidget {
   const StartButton({super.key});
 
@@ -47,12 +53,15 @@ class _StartButtonState extends ConsumerState<StartButton>
   }
 
   void handleSwitchStart() {
-    isStart = !isStart;
-    updateController();
+    final nextIsStart = !isStart;
+    if (shouldOptimisticallyAnimateDashboardStartButton(isOhos: system.isOhos)) {
+      isStart = nextIsStart;
+      updateController();
+    }
     debouncer.call(FunctionTag.updateStatus, () {
       globalState.container
           .read(setupActionProvider.notifier)
-          .updateStatus(isStart, isInit: !ref.read(initProvider));
+          .updateStatus(nextIsStart, isInit: !ref.read(initProvider));
     }, duration: commonDuration);
   }
 

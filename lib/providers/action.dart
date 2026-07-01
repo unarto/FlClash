@@ -132,10 +132,21 @@ bool resolveUseCoreProfileConfigForSetup({
   required bool applyCore,
 }) {
   return explicitUseCoreProfileConfig ??
-      shouldUseCoreProfileConfigForSetup(
-        isOhos: isOhos,
-        applyCore: applyCore,
-      );
+      shouldUseCoreProfileConfigForSetup(isOhos: isOhos, applyCore: applyCore);
+}
+
+class _OhosVpnStopRollbackState {
+  final DateTime? startTime;
+  final CoreStatus coreStatus;
+  final FixedList<Traffic> traffics;
+  final Traffic totalTraffic;
+
+  const _OhosVpnStopRollbackState({
+    required this.startTime,
+    required this.coreStatus,
+    required this.traffics,
+    required this.totalTraffic,
+  });
 }
 
 @Riverpod(keepAlive: true)
@@ -258,12 +269,38 @@ class CommonAction extends _$CommonAction {
 class SetupAction extends _$SetupAction {
   Timer? _updateTimer;
   DateTime? startTime;
+  _OhosVpnStopRollbackState? _ohosVpnStopRollbackState;
+  @visibleForTesting
+  Future<void> Function({required bool syncCoreState})?
+  resumeAfterFailedOhosVpnStop;
   List<String> _lastProfileGroupNames = const [];
+
+  @visibleForTesting
+  Future<bool> Function({VoidCallback? preloadInvoke})? applyProfileOnInitStart;
+
+  @visibleForTesting
+  Future<bool> Function()? tryStartCoreForStatusStart;
+
+  @visibleForTesting
+  Future<bool> Function()? applyProfileForFallback;
+
+  @visibleForTesting
+  Future<bool> Function()? startCoreListener;
 
   bool get isStart => startTime != null && startTime!.isBeforeNow;
 
   @override
-  void build() {}
+  void build() {
+    applyProfileOnInitStart ??=
+        ({VoidCallback? preloadInvoke}) => applyProfile(
+          force: true,
+          preloadInvoke: preloadInvoke,
+        );
+    tryStartCoreForStatusStart ??=
+        () => ref.read(coreActionProvider.notifier).tryStartCore(true);
+    applyProfileForFallback ??= () => applyProfile(force: true, silence: true);
+    startCoreListener ??= () => coreController.startListener();
+  }
 
   SetupParams get setupParams => _setupParams;
 
@@ -374,15 +411,14 @@ class SetupAction extends _$SetupAction {
     return applied;
   }
 
-  Future<void> _handleStart({bool syncCoreState = true}) async {
+  Future<void> _handleStart({
+    bool syncCoreState = true,
+  }) async {
     startTime ??= DateTime.now();
     //The local status must be updated when performing the run task
     ref.read(commonActionProvider.notifier).updateRunTime();
     if (syncCoreState) {
       ref.read(commonActionProvider.notifier).updateTraffic();
-    }
-    if (syncCoreState && !ref.read(suspendProvider)) {
-      await coreController.startListener();
     }
     _updateTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       ref.read(commonActionProvider.notifier).updateRunTime();
@@ -390,6 +426,13 @@ class SetupAction extends _$SetupAction {
         ref.read(commonActionProvider.notifier).updateTraffic();
       }
     });
+    if (syncCoreState && !ref.read(suspendProvider)) {
+      final started = await startCoreListener!();
+      if (!started) {
+        await handleStop(syncCoreState: false);
+        throw StateError('startListener failed');
+      }
+    }
   }
 
   Future _updateStartTime() async {
@@ -403,6 +446,52 @@ class SetupAction extends _$SetupAction {
     if (syncCoreState) {
       await coreController.stopListener();
     }
+  }
+
+  void _captureOhosVpnStopRollbackState() {
+    _ohosVpnStopRollbackState = _OhosVpnStopRollbackState(
+      startTime: startTime,
+      coreStatus: ref.read(coreStatusProvider),
+      traffics: ref.read(trafficsProvider).copyWith(),
+      totalTraffic: ref.read(totalTrafficProvider),
+    );
+  }
+
+  void clearOhosVpnStopRollbackState() {
+    _ohosVpnStopRollbackState = null;
+  }
+
+  Future<bool> restoreOhosVpnStateAfterFailedStop() async {
+    final rollbackState = _ohosVpnStopRollbackState;
+    if (rollbackState == null) {
+      return false;
+    }
+    try {
+      await (resumeAfterFailedOhosVpnStop ??
+          ({required bool syncCoreState}) async {
+            await _handleStart(syncCoreState: syncCoreState);
+          })(syncCoreState: rollbackState.coreStatus == CoreStatus.connected);
+    } catch (error, stackTrace) {
+      commonPrint.log(
+        '[OHOS-VPN] restore local state after failed stop failed: '
+        '$error stack: $stackTrace',
+        logLevel: LogLevel.warning,
+      );
+      clearOhosVpnStopRollbackState();
+      return false;
+    }
+    startTime = rollbackState.startTime;
+    ref.read(commonActionProvider.notifier).updateRunTime();
+    ref.read(coreStatusProvider.notifier).value = rollbackState.coreStatus;
+    ref.read(trafficsProvider.notifier).value = rollbackState.traffics.copyWith();
+    ref.read(totalTrafficProvider.notifier).value = rollbackState.totalTraffic;
+    clearOhosVpnStopRollbackState();
+    return true;
+  }
+
+  @visibleForTesting
+  void captureOhosVpnStopRollbackStateForTest() {
+    _captureOhosVpnStopRollbackState();
   }
 
   Future<void> initStatus() async {
@@ -447,14 +536,28 @@ class SetupAction extends _$SetupAction {
       ref.read(currentProfileIdProvider.notifier).value = profile.id;
       final applied = useOhosVpnConfigOnly
           ? await prepareProfileConfigOnly(force: true)
-          : await applyProfile(force: true, silence: true);
+          : await applyProfileForFallback!();
       if (applied) {
         return;
       }
     }
+    ref.read(currentProfileIdProvider.notifier).value = currentProfileId;
   }
 
-  Future<void> updateStatus(bool isStart, {bool isInit = false}) async {
+  @visibleForTesting
+  Future<void> fallbackCurrentProfileForTest({
+    bool useOhosVpnConfigOnly = false,
+  }) {
+    return _fallbackCurrentProfile(
+      useOhosVpnConfigOnly: useOhosVpnConfigOnly,
+    );
+  }
+
+  Future<void> updateStatus(
+    bool isStart, {
+    bool isInit = false,
+    bool captureOhosVpnStopRollbackState = true,
+  }) async {
     final useOhosVpnConfigOnly = shouldUseOhosVpnConfigOnly(
       isOhos: system.isOhos,
       vpnEnabled: ref.read(vpnStateProvider).vpnProps.enable,
@@ -462,10 +565,12 @@ class SetupAction extends _$SetupAction {
     if (isStart) {
       if (!isInit) {
         if (!useOhosVpnConfigOnly) {
-          final res = await ref
-              .read(coreActionProvider.notifier)
-              .tryStartCore(true);
+          final res = await tryStartCoreForStatusStart!();
           if (res) return;
+          if (ref.read(coreStatusProvider) != CoreStatus.connected) {
+            ref.read(runTimeProvider.notifier).value = null;
+            return;
+          }
         }
         if (!ref.read(initProvider)) return;
         if (useOhosVpnConfigOnly) {
@@ -474,17 +579,16 @@ class SetupAction extends _$SetupAction {
             ref.read(runTimeProvider.notifier).value = null;
             return;
           }
+          await _handleStart();
           // OHOS VPN: the VPN-process core now dials the main app's CoreService
           // socket, so subscribe to it for live status/traffic/connections and
           // reflect the established link in the dashboard status chip.
-          await _handleStart();
           ref.read(coreStatusProvider.notifier).value = CoreStatus.connected;
         } else {
           await _handleStart();
           applyProfileDebounce(force: true, silence: true);
         }
       } else {
-        globalState.needInitStatus = false;
         ref.read(runTimeProvider.notifier).value = 0;
         try {
           if (useOhosVpnConfigOnly) {
@@ -493,27 +597,40 @@ class SetupAction extends _$SetupAction {
               ref.read(runTimeProvider.notifier).value = null;
               return;
             }
+            await _handleStart();
             // OHOS VPN: subscribe to the now-linked VPN-process core and reflect
             // the established link in the dashboard status chip.
-            await _handleStart();
             ref.read(coreStatusProvider.notifier).value = CoreStatus.connected;
+            globalState.needInitStatus = false;
           } else {
-            await applyProfile(
-              force: true,
+            final applied = await applyProfileOnInitStart!(
               preloadInvoke: () async {
                 await _handleStart();
               },
             );
+            if (!applied) {
+              ref.read(runTimeProvider.notifier).value = null;
+              return;
+            }
+            globalState.needInitStatus = false;
           }
         } catch (_) {
           ref.read(runTimeProvider.notifier).value = null;
         }
       }
     } else {
+      if (useOhosVpnConfigOnly &&
+          captureOhosVpnStopRollbackState &&
+          ref.read(isStartProvider)) {
+        _captureOhosVpnStopRollbackState();
+      } else if (!captureOhosVpnStopRollbackState) {
+        clearOhosVpnStopRollbackState();
+      }
       await handleStop(syncCoreState: !useOhosVpnConfigOnly);
       if (useOhosVpnConfigOnly) {
         ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
       } else {
+        clearOhosVpnStopRollbackState();
         coreController.resetTraffic();
       }
       ref.read(trafficsProvider.notifier).clear();
@@ -589,11 +706,7 @@ class SetupAction extends _$SetupAction {
   }
 
   Future<bool> prepareProfileConfigOnly({bool force = false}) async {
-    return _setupConfig(
-      force: force,
-      silence: true,
-      applyCore: false,
-    );
+    return _setupConfig(force: force, silence: true, applyCore: false);
   }
 
   Future<VM2<String, String>> getProfile({
@@ -674,7 +787,13 @@ class SetupAction extends _$SetupAction {
       final code = await system.authorizeCore();
       switch (code) {
         case AuthorizeCode.success:
-          await ref.read(coreActionProvider.notifier).restartCore();
+          ref.read(realTunEnableProvider.notifier).value = enableTun;
+          final restarted = await ref
+              .read(coreActionProvider.notifier)
+              .restartCore();
+          if (!restarted) {
+            return Result.error('');
+          }
           return Result.error('');
         case AuthorizeCode.none:
           break;
@@ -712,14 +831,15 @@ class SetupAction extends _$SetupAction {
     final realTunEnable = ref.read(realTunEnableProvider);
     final realPatchConfig = patchConfig.copyWith.tun(enable: realTunEnable);
     final setupState = await ref.read(setupStateProvider(profile.id).future);
-    final resolvedUseCoreProfileConfig =
-        resolveUseCoreProfileConfigForSetup(
-          explicitUseCoreProfileConfig: useCoreProfileConfig,
-          isOhos: system.isOhos,
-          applyCore: applyCore,
-        );
-    if (system.isAndroid) {
+    final resolvedUseCoreProfileConfig = resolveUseCoreProfileConfigForSetup(
+      explicitUseCoreProfileConfig: useCoreProfileConfig,
+      isOhos: system.isOhos,
+      applyCore: applyCore,
+    );
+    if (system.isAndroid || system.isOhos) {
       globalState.lastVpnState = ref.read(vpnStateProvider);
+    }
+    if (system.isAndroid) {
       final sharedState = ref.read(sharedStateProvider);
       preferences.saveShareState(sharedState);
     }
@@ -870,7 +990,7 @@ class BackupAction extends _$BackupAction {
       );
       final configMap = migrationData.configMap;
       if (option == RestoreOption.onlyProfiles || configMap == null) return;
-      final config = Config.fromJson(configMap);
+      final config = Config.realFromJson(configMap);
       ref.read(patchClashConfigProvider.notifier).value =
           config.patchClashConfig;
       ref.read(appSettingProvider.notifier).value = config.appSettingProps;
@@ -902,8 +1022,45 @@ class BackupAction extends _$BackupAction {
 
 @Riverpod(keepAlive: true)
 class CoreAction extends _$CoreAction {
+  @visibleForTesting
+  Future<String> Function() preloadCore = () => coreController.preload();
+
+  @visibleForTesting
+  Future<void> Function(bool isUser) shutdownCore =
+      (isUser) => coreController.shutdown(isUser);
+
+  @visibleForTesting
+  Future<void> Function()? initCoreOverride;
+
+  @visibleForTesting
+  void Function(String message) showCoreConnectFailure =
+      globalState.showNotifier;
+
+  @visibleForTesting
+  bool Function() isCoreCompleted = () => coreController.isCompleted;
+
+  @visibleForTesting
+  FutureOr<bool> Function() isCoreInit = () => coreController.isInit;
+
+  @visibleForTesting
+  Future<bool> Function(int version) runCoreInit =
+      (version) => coreController.init(version);
+
+  @visibleForTesting
+  Future<AuthorizeCode> Function() authorizeCore = () => system.authorizeCore();
+
+  @visibleForTesting
+  Future<bool> Function()? restartCoreAfterAuthorization;
+
+  @visibleForTesting
+  Future<bool> Function()? applyProfileAfterRestart;
+
   @override
-  void build() {}
+  void build() {
+    restartCoreAfterAuthorization ??= () => restartCore();
+    applyProfileAfterRestart ??=
+        () => ref.read(setupActionProvider.notifier).applyProfile(force: true);
+  }
 
   Future<void> initCore() async {
     final version = ref.read(versionProvider);
@@ -912,7 +1069,7 @@ class CoreAction extends _$CoreAction {
     try {
       commonPrint.log('[OHOS-CORE] initCore before isInit');
       final stopwatch = Stopwatch()..start();
-      isInit = await coreController.isInit;
+      isInit = await isCoreInit();
       stopwatch.stop();
       commonPrint.log(
         '[OHOS-CORE] initCore after isInit value=$isInit elapsed=${stopwatch.elapsedMilliseconds}ms',
@@ -929,11 +1086,14 @@ class CoreAction extends _$CoreAction {
       try {
         commonPrint.log('[OHOS-CORE] initCore before init version=$version');
         final stopwatch = Stopwatch()..start();
-        final res = await coreController.init(version);
+        final res = await runCoreInit(version);
         stopwatch.stop();
         commonPrint.log(
           '[OHOS-CORE] initCore after init result=$res elapsed=${stopwatch.elapsedMilliseconds}ms',
         );
+        if (!res) {
+          throw StateError('core init returned false');
+        }
       } catch (e, s) {
         commonPrint.log(
           '[OHOS-CORE] initCore init threw error=$e stack=$s',
@@ -951,13 +1111,13 @@ class CoreAction extends _$CoreAction {
   Future<void> connectCore() async {
     ref.read(coreStatusProvider.notifier).value = CoreStatus.connecting;
     final result = await Future.wait([
-      coreController.preload(),
+      preloadCore(),
       Future.delayed(const Duration(milliseconds: 300)),
     ]);
     final String message = result[0];
     if (message.isNotEmpty) {
       ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
-      globalState.showNotifier(message);
+      showCoreConnectFailure(message);
       return;
     }
     ref.read(coreStatusProvider.notifier).value = CoreStatus.connected;
@@ -966,10 +1126,14 @@ class CoreAction extends _$CoreAction {
   Future<Result<bool>> requestAdmin(bool enableTun) async {
     final realTunEnable = ref.read(realTunEnableProvider);
     if (enableTun != realTunEnable && realTunEnable == false) {
-      final code = await system.authorizeCore();
+      final code = await authorizeCore();
       switch (code) {
         case AuthorizeCode.success:
-          await restartCore();
+          ref.read(realTunEnableProvider.notifier).value = enableTun;
+          final restarted = await restartCoreAfterAuthorization!();
+          if (!restarted) {
+            return Result.error('');
+          }
           return Result.error('');
         case AuthorizeCode.none:
           break;
@@ -982,26 +1146,32 @@ class CoreAction extends _$CoreAction {
     return Result.success(enableTun);
   }
 
-  Future<void> restartCore([bool start = false]) async {
+  Future<bool> restartCore([bool start = false]) async {
     final isDisconnected =
         ref.read(coreStatusProvider) == CoreStatus.disconnected;
     ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
-    await coreController.shutdown(!isDisconnected);
+    await shutdownCore(!isDisconnected);
     await connectCore();
-    await initCore();
+    if (ref.read(coreStatusProvider) != CoreStatus.connected) {
+      return false;
+    }
+    await (initCoreOverride ?? initCore)();
     if (start || ref.read(isStartProvider)) {
       await ref
           .read(setupActionProvider.notifier)
           .updateStatus(true, isInit: true);
     } else {
-      await ref.read(setupActionProvider.notifier).applyProfile(force: true);
+      final applied = await applyProfileAfterRestart!();
+      if (!applied) {
+        return false;
+      }
     }
+    return true;
   }
 
   Future<bool> tryStartCore([bool start = false]) async {
-    if (coreController.isCompleted) return false;
-    await restartCore(start);
-    return true;
+    if (isCoreCompleted()) return false;
+    return restartCore(start);
   }
 
   void handleCoreDisconnected() {

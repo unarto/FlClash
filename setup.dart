@@ -167,12 +167,15 @@ Future<int> _package(
   }
 
   final coreSha256 = platform == 'windows' ? await _buildGoCore(rootDir) : null;
+  final appVersion = _readAppVersion(rootDir);
 
   final file = File(p.join(rootDir, 'env.json'));
 
   await file.writeAsString(
     jsonEncode({
       'APP_ENV': env,
+      'APP_VERSION': appVersion.versionName,
+      'APP_BUILD_NUMBER': appVersion.buildNumber,
       'CORE_SHA256': coreSha256,
       'TARGET_PLATFORM': platform,
     }),
@@ -228,10 +231,13 @@ Future<int> _packageOhos(
 }) async {
   const flutterArch = 'ohos-arm64';
   final ohosContext = _prepareOhosBuildContext(rootDir);
+  final appVersion = _readAppVersion(rootDir);
   final envFile = File(p.join(rootDir, 'env.json'));
   await envFile.writeAsString(
     jsonEncode({
       'APP_ENV': env,
+      'APP_VERSION': appVersion.versionName,
+      'APP_BUILD_NUMBER': appVersion.buildNumber,
       'CORE_SHA256': null,
       'TARGET_PLATFORM': 'ohos',
     }),
@@ -249,6 +255,7 @@ Future<int> _packageOhos(
   ];
 
   _writeOhosLocalProperties(rootDir, ohosContext);
+  _syncOhosAppScopeVersion(rootDir, appVersion);
   _repairOhosDartPackageResolution(rootDir, ohosContext);
   final ohosEnvironment = _buildOhosEnvironment(ohosContext);
   final ohosGoRoot = await _prepareOhosGoToolchain(rootDir, ohosEnvironment);
@@ -663,7 +670,7 @@ int _renameOhosArtifact(String rootDir, String flutterArch) {
     return 1;
   }
 
-  final version = _readAppVersion(rootDir);
+  final version = _readAppVersion(rootDir).versionName;
   final releaseArch = flutterArch.replaceFirst('ohos-', '');
   final distDir = Directory(p.join(rootDir, 'dist'));
   if (!distDir.existsSync()) {
@@ -853,24 +860,59 @@ bool _isCompatibleOhosSdkRoot(String sdkRoot) {
 
 void _writeOhosLocalProperties(String rootDir, _OhosBuildContext context) {
   final file = File(p.join(rootDir, 'ohos', 'local.properties'));
-  final versionLine = File(p.join(rootDir, 'pubspec.yaml'))
-      .readAsLinesSync()
-      .firstWhere((line) => line.startsWith('version: '))
-      .substring('version: '.length)
-      .trim();
-  final versionParts = versionLine.split('+');
-  final versionName = versionParts.first;
-  final versionCode = versionParts.length > 1 ? versionParts[1] : '1';
+  final appVersion = _readAppVersion(rootDir);
 
   final lines = <String>[
     'hwsdk.dir=${context.devecoSdkRoot}',
     'sdk.dir=${context.compatibleSdkRoot}',
     if (context.nodeHome != null) 'nodejs.dir=${context.nodeHome!}',
     'flutter.sdk=${context.flutterSdkRoot}',
-    'flutter.versionName=$versionName',
-    'flutter.versionCode=$versionCode',
+    'flutter.versionName=${appVersion.versionName}',
+    'flutter.versionCode=${appVersion.buildNumber}',
   ];
   file.writeAsStringSync('${lines.join('\n')}\n');
+}
+
+_AppVersion _readAppVersion(String rootDir) {
+  final versionLine = File(p.join(rootDir, 'pubspec.yaml'))
+      .readAsLinesSync()
+      .firstWhere((line) => line.startsWith('version: '))
+      .substring('version: '.length)
+      .trim();
+  final versionParts = versionLine.split('+');
+  return _AppVersion(
+    versionName: versionParts.first,
+    buildNumber: versionParts.length > 1 ? versionParts[1] : '1',
+  );
+}
+
+class _AppVersion {
+  const _AppVersion({required this.versionName, required this.buildNumber});
+
+  final String versionName;
+  final String buildNumber;
+}
+
+void _syncOhosAppScopeVersion(String rootDir, _AppVersion appVersion) {
+  final appScopeFile = File(p.join(rootDir, 'ohos', 'AppScope', 'app.json5'));
+  if (!appScopeFile.existsSync()) {
+    return;
+  }
+  final versionNamePattern = RegExp(r'"versionName"\s*:\s*"[^"]*"');
+  final versionCodePattern = RegExp(r'"versionCode"\s*:\s*\d+');
+  final content = appScopeFile.readAsStringSync();
+  final updated = content
+      .replaceFirst(
+        versionCodePattern,
+        '"versionCode": ${appVersion.buildNumber}',
+      )
+      .replaceFirst(
+        versionNamePattern,
+        '"versionName": "${appVersion.versionName}"',
+      );
+  if (updated != content) {
+    appScopeFile.writeAsStringSync(updated);
+  }
 }
 
 void _repairOhosDartPackageResolution(
@@ -1319,14 +1361,6 @@ String? _prependPathEntries(List<String> entries, {String? basePath}) {
     return null;
   }
   return values.join(Platform.isWindows ? ';' : ':');
-}
-
-String _readAppVersion(String rootDir) {
-  final pubspec = File(p.join(rootDir, 'pubspec.yaml'));
-  final versionLine = pubspec.readAsLinesSync().firstWhere(
-    (line) => line.startsWith('version: '),
-  );
-  return versionLine.substring('version: '.length).trim().split('+').first;
 }
 
 String _resolveFlutterExecutable() {

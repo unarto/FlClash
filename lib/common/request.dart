@@ -44,9 +44,6 @@ CheckForUpdateResult parseCheckForUpdateResponse({
   final remoteVersion = data['tag_name'] as String? ?? '';
   final hasUpdate =
       utils.compareVersions(remoteVersion.replaceAll('v', ''), version) > 0;
-  commonPrint.log(
-    '[check-update] compare local=$version remote=$remoteVersion hasUpdate=$hasUpdate',
-  );
   if (!hasUpdate) {
     return const CheckForUpdateResult.upToDate();
   }
@@ -105,7 +102,6 @@ class Request {
         userAgent ??
         (subscriptionCompatible ? currentSubscriptionRequestUserAgent() : null);
     try {
-      commonPrint.log('getFileResponseForUrl start direct=$direct url=$url');
       final response = await client.get<Uint8List>(
         url,
         options: Options(
@@ -115,18 +111,12 @@ class Request {
               : {'User-Agent': resolvedUserAgent},
         ),
       );
-      commonPrint.log(
-        'getFileResponseForUrl done direct=$direct status=${response.statusCode} bytes=${response.data?.length ?? 0}',
-      );
       return response;
     } catch (e) {
       commonPrint.log(
         'getFileResponseForUrl error direct=$direct ${e.toString()}',
       );
       if (e is DioException) {
-        commonPrint.log(
-          'getFileResponseForUrl dio direct=$direct type=${e.type} message=${e.message} response=${e.response?.statusCode}',
-        );
         if (e.type == DioExceptionType.unknown) {
           throw currentAppLocalizations.unknownNetworkError;
         } else if (e.type == DioExceptionType.badResponse) {
@@ -167,18 +157,12 @@ class Request {
 
   Future<CheckForUpdateResult> checkForUpdate() async {
     const url = 'https://api.github.com/repos/$repository/releases/latest';
-    commonPrint.log('[check-update] request start url=$url');
     try {
       final response = await dio.get(
         url,
         options: Options(responseType: ResponseType.json),
       );
-      commonPrint.log('[check-update] response status=${response.statusCode}');
       if (response.statusCode != 200) {
-        commonPrint.log(
-          '[check-update] unexpected status=${response.statusCode}',
-          logLevel: LogLevel.warning,
-        );
         return const CheckForUpdateResult.failed();
       }
       final data = response.data as Map<String, dynamic>;
@@ -186,11 +170,7 @@ class Request {
         data: data,
         version: globalState.packageInfo.version,
       );
-    } catch (e) {
-      commonPrint.log(
-        '[check-update] request failed error=$e',
-        logLevel: LogLevel.warning,
-      );
+    } catch (_) {
       return const CheckForUpdateResult.failed();
     }
   }

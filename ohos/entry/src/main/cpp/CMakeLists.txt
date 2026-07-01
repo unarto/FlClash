@@ -23,7 +23,7 @@ if(OHOS_CORE_ARCHIVE)
     set_target_properties(clash_static PROPERTIES IMPORTED_LOCATION "${OHOS_CORE_ARCHIVE}")
 endif()
 
-add_library(entry SHARED bridge.cpp)
+add_library(entry SHARED bridge.cpp tracked_core_state.cpp)
 target_link_libraries(entry PUBLIC
     libace_napi.z.so
     libchild_process.so

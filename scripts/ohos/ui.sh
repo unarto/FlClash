@@ -54,6 +54,7 @@ resolve_target() {
   local targets=()
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
+    [[ "$target" == "[Empty]" ]] && continue
     targets+=("$target")
   done < <("$HDC_BIN" list targets 2>/dev/null || true)
 
@@ -67,7 +68,11 @@ resolve_target() {
 run_hdc() {
   local target="$1"
   shift
-  hdc -t "$target" "$@"
+  "$HDC_BIN" -t "$target" "$@"
+}
+
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
 dump_layout() {
@@ -414,7 +419,8 @@ main() {
       local x="$1"
       local y="$2"
       shift 2
-      run_hdc "$target" shell "uitest uiInput inputText $x $y $*"
+      local text_payload="$*"
+      run_hdc "$target" shell "uitest uiInput inputText $x $y $(shell_quote "$text_payload")"
       ;;
     tap-text)
       [[ $# -eq 1 || $# -eq 2 ]] || fail "tap-text requires: text [contains|exact]"
@@ -447,7 +453,8 @@ main() {
       ;;
     text)
       [[ $# -ge 1 ]] || fail "text requires at least one argument"
-      run_hdc "$target" shell "uitest uiInput text $*"
+      local text_payload="$*"
+      run_hdc "$target" shell "uitest uiInput text $(shell_quote "$text_payload")"
       ;;
     capture)
       [[ $# -ge 1 && $# -le 2 ]] || fail "capture requires: name [out_dir]"
@@ -460,7 +467,7 @@ main() {
       [[ $# -ge 1 && $# -le 2 ]] || fail "logs requires: grep_pattern [tail_lines]"
       local pattern="$1"
       local tail_lines="${2:-120}"
-      run_hdc "$target" shell "hilog -x | grep -E \"$pattern\" | tail -n $tail_lines"
+      run_hdc "$target" shell "hilog -x | grep -E $(shell_quote "$pattern") | tail -n $tail_lines || true"
       ;;
     ""|-h|--help|help)
       usage

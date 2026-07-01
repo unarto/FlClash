@@ -45,33 +45,64 @@ class _VpnContainerState extends ConsumerState<VpnManager> {
     if (!system.isOhos) {
       return;
     }
-    _pendingSync = _pendingSync
-        .then((_) => _syncVpn())
-        .catchError((Object error) {
-          commonPrint.log(
-            '[OHOS-VPN] sync failed: $error',
-            logLevel: LogLevel.warning,
-          );
-        });
+    _pendingSync = _pendingSync.then((_) => _syncVpn()).catchError((
+      Object error,
+    ) {
+      commonPrint.log(
+        '[OHOS-VPN] sync failed: $error',
+        logLevel: LogLevel.warning,
+      );
+    });
   }
 
   Future<void> _syncVpn() async {
+    if (globalState.isHandlingOhosPendingDebugVpnStart) {
+      commonPrint.log(
+        '[OHOS-VPN] skip sync during pending debug VPN start handling',
+      );
+      return;
+    }
     final state = ref.read(vpnStateProvider);
     final isStart = ref.read(isStartProvider);
     commonPrint.log(
       '[OHOS-VPN] sync enter isStart=$isStart enable=${state.vpnProps.enable} '
-      'stack=${state.stack.name} ipv6=${state.vpnProps.ipv6} allowBypass=${state.vpnProps.allowBypass}',
+      'stack=${state.stack.name} ipv6=${state.vpnProps.ipv6}',
     );
     if (!isStart || !state.vpnProps.enable) {
-      final vpnRunning = await app?.getVpnRunning() ?? false;
-      if (vpnRunning) {
+      try {
+        final stopped = await app?.stopVpn();
+        if (stopped != true) {
+          throw PlatformException(
+            code: 'STOP_VPN_FAILED',
+            message: 'OHOS VPN extension did not stop',
+          );
+        }
+      } on PlatformException catch (error) {
+        final message = formatOhosVpnStopError(error);
+        var messageToShow = message;
+        final shouldRestoreRunningState =
+            shouldRestoreOhosVpnStateAfterStopFailure(error);
         commonPrint.log(
-          '[OHOS-VPN] skip stop because native vpn is already running',
+          '[OHOS-VPN] stop failed: $message '
+          'restoreRunningState=$shouldRestoreRunningState',
           logLevel: LogLevel.warning,
         );
+        if (shouldRestoreRunningState) {
+          final restoredRunningState = await ref
+              .read(setupActionProvider.notifier)
+              .restoreOhosVpnStateAfterFailedStop();
+          if (!restoredRunningState) {
+            messageToShow = formatOhosVpnStopRestoreFailure(message);
+          }
+        } else {
+          ref
+              .read(setupActionProvider.notifier)
+              .clearOhosVpnStopRollbackState();
+        }
+        globalState.showNotifier(messageToShow);
         return;
       }
-      await app?.stopVpn();
+      ref.read(setupActionProvider.notifier).clearOhosVpnStopRollbackState();
       return;
     }
     try {
@@ -85,7 +116,6 @@ class _VpnContainerState extends ConsumerState<VpnManager> {
       final started = await app?.startVpn(
         stack: state.stack.name,
         ipv6: state.vpnProps.ipv6,
-        allowBypass: state.vpnProps.allowBypass,
         initParamsJson: initParamsJson,
         setupParamsJson: setupParamsJson,
         // Let the VPN-process core dial the main app's CoreService socket so the
@@ -94,7 +124,7 @@ class _VpnContainerState extends ConsumerState<VpnManager> {
         coreSocketPath: unixSocketPath,
       );
       commonPrint.log('[OHOS-VPN] startVpn returned started=$started');
-      if (started == false) {
+      if (started != true) {
         throw PlatformException(
           code: 'START_VPN_FAILED',
           message: 'OHOS VPN extension did not start',
@@ -107,26 +137,14 @@ class _VpnContainerState extends ConsumerState<VpnManager> {
         logLevel: LogLevel.warning,
       );
       globalState.showNotifier(message);
-      await ref.read(setupActionProvider.notifier).updateStatus(false);
+      await ref.read(
+        setupActionProvider.notifier,
+      ).updateStatus(false, captureOhosVpnStopRollbackState: false);
     }
   }
 
   String _formatVpnError(PlatformException error) {
-    final detail = error.details?.toString();
-    if ((detail?.contains('com.huawei.hmos.vpndialog') ?? false) ||
-        (error.message?.contains('com.huawei.hmos.vpndialog') ?? false) ||
-        (error.message?.contains('vpn extension not ready') ?? false) ||
-        (error.message?.contains('startVpnExtensionAbility timeout') ?? false)) {
-      return 'OHOS VPN 授权组件缺失，当前模拟器无法完成系统 VPN 启动';
-    }
-    final message = error.message?.trim();
-    if (message != null && message.isNotEmpty) {
-      return 'VPN 启动失败: $message';
-    }
-    if (detail != null && detail.isNotEmpty) {
-      return 'VPN 启动失败: $detail';
-    }
-    return 'VPN 启动失败';
+    return formatOhosVpnStartError(error);
   }
 
   void showTip(VpnState state) {

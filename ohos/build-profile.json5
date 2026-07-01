@@ -38,33 +38,6 @@
           ]
         }
       ]
-    },
-    {
-      "name": "proxy",
-      "srcPath": "../plugins/proxy/ohos",
-      "targets": [
-        {
-          "name": "default"
-        }
-      ]
-    },
-    {
-      "name": "wifi_ssid",
-      "srcPath": "../plugins/wifi_ssid/ohos",
-      "targets": [
-        {
-          "name": "default"
-        }
-      ]
-    },
-    {
-      "name": "window_ext",
-      "srcPath": "../plugins/window_ext/ohos",
-      "targets": [
-        {
-          "name": "default"
-        }
-      ]
     }
   ]
 }

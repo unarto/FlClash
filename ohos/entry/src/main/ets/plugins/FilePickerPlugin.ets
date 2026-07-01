@@ -33,11 +33,19 @@ export default class FilePickerPlugin implements FlutterPlugin, MethodCallHandle
   }
 
   onDetachedFromEngine(binding: FlutterPluginBinding): void {
+    this.onDetachedFromAbility();
+    this.pluginBinding = null;
+  }
+
+  onDetachedFromAbility(): void {
+    this.delegate?.cancelPendingResult(
+      'no_activity',
+      'File picker ability detached before completion',
+    );
     if (this.channel !== null) {
       this.channel.setMethodCallHandler(null);
       this.channel = null;
     }
-    this.pluginBinding = null;
     this.abilityBinding = null;
     this.ability = null;
     this.delegate = null;

@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:fl_clash/common/common.dart';
-import 'package:fl_clash/common/task.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/enum/enum.dart';
@@ -39,19 +38,32 @@ void main() {
       expect(ua, isNot(contains('clash-verge')));
     });
 
-    test('provider compatible ua stays on subscription-safe client token', () {
+    test('provider compatible ua uses subscription-safe token on ohos', () {
       final info = PackageInfo(
         appName: appName,
         packageName: packageName,
         version: '0.8.93',
         buildNumber: '1',
       );
-      final ua = info.providerCompatibleUa;
-      if (system.isOhos) {
-        expect(ua, 'clash.meta/1.10.0');
-      } else {
-        expect(ua, info.ua);
-      }
+
+      expect(
+        resolveProviderCompatibleUa(isOhos: true, ua: info.ua),
+        'clash.meta/1.10.0',
+      );
+    });
+
+    test('provider compatible ua preserves browser ua on non-ohos', () {
+      final info = PackageInfo(
+        appName: appName,
+        packageName: packageName,
+        version: '0.8.93',
+        buildNumber: '1',
+      );
+
+      expect(
+        resolveProviderCompatibleUa(isOhos: false, ua: info.ua),
+        info.ua,
+      );
     });
   });
 
@@ -211,32 +223,35 @@ void main() {
       expect(dns.containsKey('respect-rules'), false);
     });
 
-    test('prefers fallback over cn-only doh nameservers even with appended system dns', () {
-      final dns = normalizeOhosDnsConfig(
-        {
-          'enable': true,
-          'listen': '0.0.0.0:1053',
-          'enhanced-mode': 'redir-host',
-          'nameserver': [
-            'https://doh.pub/dns-query',
-            'https://dns.alidns.com/dns-query',
-            'system://',
-          ],
-        },
-        const Dns(
-          enable: true,
-          listen: '0.0.0.0:1053',
-          enhancedMode: DnsMode.redirHost,
-          nameserver: [
-            'https://doh.pub/dns-query',
-            'https://dns.alidns.com/dns-query',
-          ],
-          fallback: ['tls://8.8.4.4', 'tls://1.1.1.1'],
-        ),
-      );
+    test(
+      'prefers fallback over cn-only doh nameservers even with appended system dns',
+      () {
+        final dns = normalizeOhosDnsConfig(
+          {
+            'enable': true,
+            'listen': '0.0.0.0:1053',
+            'enhanced-mode': 'redir-host',
+            'nameserver': [
+              'https://doh.pub/dns-query',
+              'https://dns.alidns.com/dns-query',
+              'system://',
+            ],
+          },
+          const Dns(
+            enable: true,
+            listen: '0.0.0.0:1053',
+            enhancedMode: DnsMode.redirHost,
+            nameserver: [
+              'https://doh.pub/dns-query',
+              'https://dns.alidns.com/dns-query',
+            ],
+            fallback: ['tls://8.8.4.4', 'tls://1.1.1.1'],
+          ),
+        );
 
-      expect(dns['nameserver'], ['tls://8.8.4.4', 'tls://1.1.1.1']);
-    });
+        expect(dns['nameserver'], ['tls://8.8.4.4', 'tls://1.1.1.1']);
+      },
+    );
 
     test('prefers fallback over cn-only plain dns resolvers for ohos', () {
       final dns = normalizeOhosDnsConfig(
@@ -305,37 +320,40 @@ void main() {
       expect(dns['direct-nameserver-follow-policy'], true);
     });
 
-    test('injects Huawei bootstrap domains into explicit direct dns policy', () {
-      final dns = normalizeOhosDnsConfig(
-        {
-          'enable': true,
-          'listen': '0.0.0.0:1053',
-          'enhanced-mode': 'redir-host',
-          'nameserver': ['https://1.1.1.1/dns-query'],
-        },
-        const Dns(
-          enable: true,
-          listen: '0.0.0.0:1053',
-          enhancedMode: DnsMode.redirHost,
-          nameserver: ['https://1.1.1.1/dns-query'],
-        ),
-      );
+    test(
+      'injects Huawei bootstrap domains into explicit direct dns policy',
+      () {
+        final dns = normalizeOhosDnsConfig(
+          {
+            'enable': true,
+            'listen': '0.0.0.0:1053',
+            'enhanced-mode': 'redir-host',
+            'nameserver': ['https://1.1.1.1/dns-query'],
+          },
+          const Dns(
+            enable: true,
+            listen: '0.0.0.0:1053',
+            enhancedMode: DnsMode.redirHost,
+            nameserver: ['https://1.1.1.1/dns-query'],
+          ),
+        );
 
-      final policy = Map<String, dynamic>.from(
-        dns['nameserver-policy'] ?? const <String, dynamic>{},
-      );
-      expect(policy['browsercfg-drcn.cloud.dbankcloud.cn'], ['223.5.5.5']);
-      expect(policy['browserr-drcn.dbankcdn.cn'], ['223.5.5.5']);
-      expect(policy['configserver-drcn.platform.dbankcloud.cn'], [
-        '223.5.5.5',
-      ]);
-      expect(policy['httpdns.platform.dbankcloud.com'], ['223.5.5.5']);
-      expect(policy['httpdns-browser.platform.dbankcloud.cn'], ['223.5.5.5']);
-      expect(policy['nps-drcn.platform.dbankcloud.cn'], ['223.5.5.5']);
-      expect(policy['+.grs.dbankcloud.cn'], ['223.5.5.5']);
-      expect(policy['+.grs.dbankcloud.com'], ['223.5.5.5']);
-      expect(dns['direct-nameserver'], ['system://']);
-    });
+        final policy = Map<String, dynamic>.from(
+          dns['nameserver-policy'] ?? const <String, dynamic>{},
+        );
+        expect(policy['browsercfg-drcn.cloud.dbankcloud.cn'], ['223.5.5.5']);
+        expect(policy['browserr-drcn.dbankcdn.cn'], ['223.5.5.5']);
+        expect(policy['configserver-drcn.platform.dbankcloud.cn'], [
+          '223.5.5.5',
+        ]);
+        expect(policy['httpdns.platform.dbankcloud.com'], ['223.5.5.5']);
+        expect(policy['httpdns-browser.platform.dbankcloud.cn'], ['223.5.5.5']);
+        expect(policy['nps-drcn.platform.dbankcloud.cn'], ['223.5.5.5']);
+        expect(policy['+.grs.dbankcloud.cn'], ['223.5.5.5']);
+        expect(policy['+.grs.dbankcloud.com'], ['223.5.5.5']);
+        expect(dns['direct-nameserver'], ['system://']);
+      },
+    );
 
     test('excludes OHOS browser bootstrap domains from fake-ip answers', () {
       final dns = normalizeOhosDnsConfig(
@@ -362,10 +380,7 @@ void main() {
         contains('configserver-drcn.platform.dbankcloud.cn'),
       );
       expect(fakeIpFilter, contains('httpdns.platform.dbankcloud.com'));
-      expect(
-        fakeIpFilter,
-        contains('contentcenter-drcn.cloud.dbankcloud.cn'),
-      );
+      expect(fakeIpFilter, contains('contentcenter-drcn.cloud.dbankcloud.cn'));
       expect(fakeIpFilter, contains('nps-drcn.platform.dbankcloud.cn'));
       expect(fakeIpFilter, contains('*.grs.dbankcloud.cn'));
       expect(fakeIpFilter, contains('*.grs.dbankcloud.com'));
@@ -412,9 +427,7 @@ void main() {
           '223.5.5.5',
         ]);
         expect(policy['httpdns.platform.dbankcloud.com'], ['223.5.5.5']);
-        expect(policy['httpdns-browser.platform.dbankcloud.cn'], [
-          '223.5.5.5',
-        ]);
+        expect(policy['httpdns-browser.platform.dbankcloud.cn'], ['223.5.5.5']);
         expect(policy['nps-drcn.platform.dbankcloud.cn'], ['223.5.5.5']);
         expect(policy['+.grs.dbankcloud.cn'], ['223.5.5.5']);
         expect(policy['+.grs.dbankcloud.com'], ['223.5.5.5']);
@@ -472,10 +485,7 @@ void main() {
         rules,
         contains('DOMAIN,browsercfg-drcn.cloud.dbankcloud.cn,DIRECT'),
       );
-      expect(
-        rules,
-        contains('DOMAIN,httpdns.platform.dbankcloud.com,DIRECT'),
-      );
+      expect(rules, contains('DOMAIN,httpdns.platform.dbankcloud.com,DIRECT'));
       expect(
         rules,
         contains(
@@ -500,7 +510,9 @@ void main() {
       );
       expect(rules.contains('DOMAIN,browserr-drcn.dbankcdn.cn,DIRECT'), true);
       expect(
-        rules.contains('DOMAIN,configserver-drcn.platform.dbankcloud.cn,DIRECT'),
+        rules.contains(
+          'DOMAIN,configserver-drcn.platform.dbankcloud.cn,DIRECT',
+        ),
         true,
       );
       expect(
@@ -520,9 +532,7 @@ void main() {
         lessThan(rules.indexOf('DOMAIN-KEYWORD,youtube,PROXY')),
       );
       expect(
-        rules.indexOf(
-          'DOMAIN,configserver-drcn.platform.dbankcloud.cn,DIRECT',
-        ),
+        rules.indexOf('DOMAIN,configserver-drcn.platform.dbankcloud.cn,DIRECT'),
         lessThan(rules.indexOf('DOMAIN-KEYWORD,youtube,PROXY')),
       );
       expect(rules, contains('MATCH,GLOBAL'));
@@ -563,9 +573,7 @@ void main() {
       );
       expect(
         rules
-            .where(
-              (rule) => rule == 'DOMAIN,browserr-drcn.dbankcdn.cn,DIRECT',
-            )
+            .where((rule) => rule == 'DOMAIN,browserr-drcn.dbankcdn.cn,DIRECT')
             .length,
         1,
       );
@@ -582,8 +590,7 @@ void main() {
       expect(
         rules
             .where(
-              (rule) =>
-                  rule == 'DOMAIN,nps-drcn.platform.dbankcloud.cn,DIRECT',
+              (rule) => rule == 'DOMAIN,nps-drcn.platform.dbankcloud.cn,DIRECT',
             )
             .length,
         1,
@@ -624,52 +631,46 @@ void main() {
         rules,
         contains('DOMAIN,configserver-drcn.platform.dbankcloud.cn,DIRECT'),
       );
-      expect(
-        rules,
-        contains('DOMAIN,metrics1-drcn.dt.dbankcloud.cn,DIRECT'),
-      );
-      expect(
-        rules,
-        contains('DOMAIN,sdkserver-drcn.op.dbankcloud.cn,DIRECT'),
-      );
-      expect(
-        rules,
-        contains('DOMAIN,feeds-drcn.cloud.huawei.com.cn,DIRECT'),
-      );
+      expect(rules, contains('DOMAIN,metrics1-drcn.dt.dbankcloud.cn,DIRECT'));
+      expect(rules, contains('DOMAIN,sdkserver-drcn.op.dbankcloud.cn,DIRECT'));
+      expect(rules, contains('DOMAIN,feeds-drcn.cloud.huawei.com.cn,DIRECT'));
       expect(rules, contains('DOMAIN,browserr-drcn.dbankcdn.cn,DIRECT'));
       expect(rules, contains('DOMAIN,nps-drcn.platform.dbankcloud.cn,DIRECT'));
     });
   });
 
   group('normalizeOhosDnsConfig', () {
-    test('routes restored OHOS browser bootstrap domains through explicit dns', () {
-      final normalized = normalizeOhosDnsConfig({}, defaultDns);
-      final nameserverPolicy = Map<String, dynamic>.from(
-        normalized['nameserver-policy'] as Map,
-      );
+    test(
+      'routes restored OHOS browser bootstrap domains through explicit dns',
+      () {
+        final normalized = normalizeOhosDnsConfig({}, defaultDns);
+        final nameserverPolicy = Map<String, dynamic>.from(
+          normalized['nameserver-policy'] as Map,
+        );
 
-      expect(
-        nameserverPolicy['metrics1-drcn.dt.dbankcloud.cn'],
-        defaultDns.defaultNameserver,
-      );
-      expect(
-        nameserverPolicy['feeds-drcn.cloud.huawei.com.cn'],
-        defaultDns.defaultNameserver,
-      );
-      expect(
-        nameserverPolicy['browserr-drcn.dbankcdn.cn'],
-        defaultDns.defaultNameserver,
-      );
-      expect(
-        nameserverPolicy['configserver-drcn.platform.dbankcloud.cn'],
-        defaultDns.defaultNameserver,
-      );
-      expect(
-        nameserverPolicy['nps-drcn.platform.dbankcloud.cn'],
-        defaultDns.defaultNameserver,
-      );
-      expect(normalized['direct-nameserver'], ['system://']);
-    });
+        expect(
+          nameserverPolicy['metrics1-drcn.dt.dbankcloud.cn'],
+          defaultDns.defaultNameserver,
+        );
+        expect(
+          nameserverPolicy['feeds-drcn.cloud.huawei.com.cn'],
+          defaultDns.defaultNameserver,
+        );
+        expect(
+          nameserverPolicy['browserr-drcn.dbankcdn.cn'],
+          defaultDns.defaultNameserver,
+        );
+        expect(
+          nameserverPolicy['configserver-drcn.platform.dbankcloud.cn'],
+          defaultDns.defaultNameserver,
+        );
+        expect(
+          nameserverPolicy['nps-drcn.platform.dbankcloud.cn'],
+          defaultDns.defaultNameserver,
+        );
+        expect(normalized['direct-nameserver'], ['system://']);
+      },
+    );
   });
 
   group('normalizeOhosTunDnsHijack', () {
@@ -952,6 +953,72 @@ void main() {
     test('realFromJson handles null', () {
       final result = Config.realFromJson(null);
       expect(result.appSettingProps.onlyStatisticsProxy, false);
+    });
+
+    test('normalizeVpnPropsForPlatform resets unsupported ohos vpn options', () {
+      const vpnProps = VpnProps(
+        systemProxy: false,
+        allowBypass: false,
+        accessControlProps: AccessControlProps(
+          enable: true,
+          mode: AccessControlMode.acceptSelected,
+          acceptList: ['com.example.app'],
+        ),
+      );
+
+      final normalized = normalizeVpnPropsForPlatform(
+        isOhos: true,
+        vpnProps: vpnProps,
+      );
+
+      expect(normalized.systemProxy, isTrue);
+      expect(normalized.allowBypass, isTrue);
+      expect(normalized.accessControlProps, defaultAccessControlProps);
+    });
+
+    test(
+      'normalizeNetworkPropsForPlatform resets unsupported ohos network options',
+      () {
+        const networkProps = NetworkProps(
+          systemProxy: false,
+          bypassDomain: ['example.com'],
+        );
+
+        final normalized = normalizeNetworkPropsForPlatform(
+          isOhos: true,
+          networkProps: networkProps,
+        );
+
+        expect(normalized.systemProxy, isTrue);
+        expect(normalized.bypassDomain, defaultBypassDomain);
+      },
+    );
+
+    test('normalizeVpnPropsForPlatform preserves non-ohos vpn options', () {
+      const vpnProps = VpnProps(
+        systemProxy: false,
+        allowBypass: false,
+      );
+
+      expect(
+        normalizeVpnPropsForPlatform(isOhos: false, vpnProps: vpnProps),
+        vpnProps,
+      );
+    });
+
+    test('normalizeNetworkPropsForPlatform preserves non-ohos network options', () {
+      const networkProps = NetworkProps(
+        systemProxy: false,
+        bypassDomain: ['example.com'],
+      );
+
+      expect(
+        normalizeNetworkPropsForPlatform(
+          isOhos: false,
+          networkProps: networkProps,
+        ),
+        networkProps,
+      );
     });
 
     test('full config round-trip', () {

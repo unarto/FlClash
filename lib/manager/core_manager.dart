@@ -10,6 +10,13 @@ import 'package:fl_clash/state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+bool shouldForceStartLogOnInit({
+  required bool isOhos,
+  required bool openLogs,
+}) {
+  return isOhos && openLogs;
+}
+
 class CoreManager extends ConsumerStatefulWidget {
   final Widget child;
 
@@ -30,7 +37,10 @@ class _CoreContainerState extends ConsumerState<CoreManager>
   void initState() {
     super.initState();
     coreEventManager.addListener(this);
-    if (system.isOhos) {
+    if (shouldForceStartLogOnInit(
+      isOhos: system.isOhos,
+      openLogs: ref.read(appSettingProvider).openLogs,
+    )) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         commonPrint.log('[OHOS-CORE] force startLog on init');
         coreController.startLog();
