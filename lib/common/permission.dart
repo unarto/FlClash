@@ -53,7 +53,10 @@ class Permissions {
   }
 
   Future<void> checkLocationPermissions() async {
-    if (!(system.isAndroid || system.isOhos || system.isMacOS)) {
+    // OHOS has no wifi_ssid plugin registered (har-only, excluded to keep the
+    // hvigor build working), so calling into WifiSsidManager throws
+    // MissingPluginException there. Skip the location/SSID permission flow.
+    if (!(system.isAndroid || system.isMacOS)) {
       return;
     }
     final res = await WifiSsidManager.instance.checkPermission();
