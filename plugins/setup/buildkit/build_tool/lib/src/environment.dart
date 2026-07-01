@@ -16,6 +16,14 @@ String _get(String key, {String? defaultValue}) {
 
 class Environment {
   static String get androidNdk => _require('ANDROID_NDK');
+  static String get ohosSdkRoot {
+    final sourceSdk = Platform.environment['HOS_SDK_HOME'];
+    if (sourceSdk != null && sourceSdk.isNotEmpty) {
+      return sourceSdk;
+    }
+    return _require('OHOS_SDK_HOME');
+  }
+
   static String get appEnv => _get('APP_ENV', defaultValue: 'pre');
   static String get configuration =>
       _get('BUILDKIT_CONFIGURATION', defaultValue: 'Release').toLowerCase();

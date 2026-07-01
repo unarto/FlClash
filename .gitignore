@@ -2,6 +2,7 @@
 *.class
 *.log
 *.pyc
+__pycache__/
 *.swp
 .DS_Store
 .atom/
@@ -32,8 +33,11 @@ migrate_working_dir/
 .packages
 .pub-cache/
 .pub/
+/oh_modules
+/ohos/hvigor/.signing
 /build/
 /dist/
+/.ohos_toolchain/
 
 # Symbolication related
 app.*.symbols
@@ -72,6 +76,42 @@ docs/
 /plugins/rust_api/.claude/
 devtools_options.yaml
 
+# Local agent/tooling configuration
+/.mcp.json
+/.lsp-mcp.json
+
+# OHOS local debug artifacts
+/.ohos_app/
+/.ohos_harmony_sdk/
+/.ohos_live/
+/.ohos_live_current/
+/.ohos_runtime_test_server/
+/.ohos_subscription_proxy/
+/.ohos_test_profile/
+/.ohos_url_test/
+/.ohos_verify/
+/.ohos_webdav/
+/.tmp/
+/.tmp_*
+/browser_*.json
+/browser_*.png
+/file_picker_*.json
+/file_picker_*.png
+/flc_*.json
+/flc_*.jpeg
+/flclash_*.json
+/flclash_*.png
+/flclash_*.jpeg
+/layout*.json
+/values.yaml
+/VPN
+
+# Generated native binaries used during OHOS packaging/testing
+/assets/data/FlClashCore
+/core/libclash/
+/ohos/entry/libs/
+
 # FVM Version Cache
 .fvm/
 .fvmrc
+test/provider.txt

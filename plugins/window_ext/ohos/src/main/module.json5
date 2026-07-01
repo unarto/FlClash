@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "window_ext",
+    "type": "har",
+    "deviceTypes": [
+      "default",
+      "tablet"
+    ]
+  }
+}

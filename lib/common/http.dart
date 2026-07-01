@@ -6,8 +6,14 @@ import 'package:fl_clash/state.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class FlClashHttpOverrides extends HttpOverrides {
+  static const _directHosts = {
+    localhost,
+    'localhost',
+    '10.0.2.2',
+  };
+
   static String handleFindProxy(Uri url) {
-    if ([localhost].contains(url.host)) {
+    if (_directHosts.contains(url.host)) {
       return 'DIRECT';
     }
     final ref = globalState.container;

@@ -1,6 +1,7 @@
 import 'dart:ffi';
 import 'dart:io';
 
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:ffi/ffi.dart';
 import 'package:fl_clash/common/common.dart';
@@ -10,6 +11,23 @@ import 'package:fl_clash/state.dart';
 import 'package:fl_clash/widgets/input.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart';
+
+const _defaultOhosAppVersion = '0.8.93';
+const _defaultOhosAppBuildNumber = '2026052901';
+
+String resolveOhosBuildValue({
+  required String appValue,
+  required String flutterValue,
+  required String fallbackValue,
+}) {
+  if (appValue.isNotEmpty) {
+    return appValue;
+  }
+  if (flutterValue.isNotEmpty) {
+    return flutterValue;
+  }
+  return fallbackValue;
+}
 
 class System {
   static System? _instance;
@@ -29,9 +47,18 @@ class System {
 
   bool get isAndroid => Platform.isAndroid;
 
+  bool get isOhos =>
+      const String.fromEnvironment('TARGET_PLATFORM') == 'ohos' ||
+      Platform.operatingSystem == 'ohos';
+
+  bool get isMobile => isAndroid || isOhos;
+
   bool get isLinux => Platform.isLinux;
 
   Future<int> get version async {
+    if (isOhos) {
+      return 0;
+    }
     final deviceInfo = await DeviceInfoPlugin().deviceInfo;
     return switch (Platform.operatingSystem) {
       'macos' => (deviceInfo as MacOsDeviceInfo).majorVersion,
@@ -41,7 +68,32 @@ class System {
     };
   }
 
+  Future<PackageInfo> getPackageInfo() async {
+    if (isOhos) {
+      final version = resolveOhosBuildValue(
+        appValue: const String.fromEnvironment('APP_VERSION'),
+        flutterValue: const String.fromEnvironment('FLUTTER_BUILD_NAME'),
+        fallbackValue: _defaultOhosAppVersion,
+      );
+      final buildNumber = resolveOhosBuildValue(
+        appValue: const String.fromEnvironment('APP_BUILD_NUMBER'),
+        flutterValue: const String.fromEnvironment('FLUTTER_BUILD_NUMBER'),
+        fallbackValue: _defaultOhosAppBuildNumber,
+      );
+      return PackageInfo(
+        appName: appName,
+        packageName: packageName,
+        version: version,
+        buildNumber: buildNumber,
+      );
+    }
+    return PackageInfo.fromPlatform();
+  }
+
   Future<bool> checkIsAdmin() async {
+    if (isOhos) {
+      return false;
+    }
     final corePath = appPath.corePath.replaceAll(' ', '\\\\ ');
     if (system.isWindows) {
       final result = await windows?.checkService();
@@ -69,7 +121,7 @@ class System {
   }
 
   Future<AuthorizeCode> authorizeCore() async {
-    if (system.isAndroid) {
+    if (system.isAndroid || system.isOhos) {
       return AuthorizeCode.error;
     }
     final isAdmin = await checkIsAdmin();
@@ -130,6 +182,12 @@ class System {
   }
 
   Future<void> exit() async {
+    if (system.isOhos) {
+      final exited = await app?.exitApp();
+      if (exited == true) {
+        return;
+      }
+    }
     if (system.isAndroid) {
       await SystemNavigator.pop();
     }

@@ -174,14 +174,21 @@ class _HomePageViewState extends ConsumerState<_HomePageView> {
     }
     final isAnimateToPage = ref.read(appSettingProvider).isAnimateToPage;
     final isMobile = ref.read(isMobileViewProvider);
+    commonPrint.log(
+      '[tab-nav] toPage label=${pageLabel.name} index=$index '
+      'animate=${isAnimateToPage && isMobile && !ignoreAnimateTo} '
+      'isMobile=$isMobile ignore=$ignoreAnimateTo',
+    );
     if (isAnimateToPage && isMobile && !ignoreAnimateTo) {
       await _pageController.animateToPage(
         index,
         duration: kTabScrollDuration,
         curve: Curves.easeOut,
       );
+      commonPrint.log('[tab-nav] animateToPage done label=${pageLabel.name}');
     } else {
       _pageController.jumpToPage(index);
+      commonPrint.log('[tab-nav] jumpToPage done label=${pageLabel.name}');
     }
   }
 

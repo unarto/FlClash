@@ -36,3 +36,14 @@ extension FileSystemEntityExt on FileSystemEntity {
     await delete(recursive: recursive);
   }
 }
+
+extension DirectoryExt on Directory {
+  Future<void> safeClear() async {
+    if (!await exists()) {
+      return;
+    }
+    await for (final entity in list(followLinks: false)) {
+      await entity.safeDelete(recursive: true);
+    }
+  }
+}

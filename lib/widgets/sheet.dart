@@ -141,6 +141,7 @@ class _AdaptiveSheetScaffoldState extends State<AdaptiveSheetScaffold> {
       case TargetPlatform.android:
       case TargetPlatform.fuchsia:
       case TargetPlatform.linux:
+      case TargetPlatform.ohos:
       case TargetPlatform.windows:
         return Icons.arrow_back;
       case TargetPlatform.iOS:

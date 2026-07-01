@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
-import 'package:test/test.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('SetupParams', () {
@@ -180,6 +180,36 @@ void main() {
   });
 
   group('ActionResult', () {
+    test('fromJson accepts numeric success code', () {
+      final result = ActionResult.fromJson({
+        'method': 'getConfig',
+        'data': {'key': 'value'},
+        'code': 0,
+      });
+      expect(result.code, ResultType.success);
+      expect(result.data, {'key': 'value'});
+    });
+
+    test('fromJson accepts string success code from OHOS bridge', () {
+      final result = ActionResult.fromJson({
+        'method': 'updateGeoData',
+        'data': '',
+        'id': 'updateGeoData#1',
+        'code': 'success',
+      });
+      expect(result.code, ResultType.success);
+      expect(result.id, 'updateGeoData#1');
+    });
+
+    test('toJson keeps numeric code values', () {
+      const ar = ActionResult(
+        method: ActionMethod.getConfig,
+        data: {'key': 'value'},
+        code: ResultType.success,
+      );
+      expect(ar.toJson()['code'], 0);
+    });
+
     test('toResult returns success Result for success code', () {
       const ar = ActionResult(
         method: ActionMethod.getConfig,

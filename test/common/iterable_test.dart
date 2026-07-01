@@ -1,5 +1,5 @@
 import 'package:fl_clash/common/iterable.dart';
-import 'package:test/test.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('IterableExt.separated', () {

@@ -31,6 +31,7 @@ class _BackupAndRestoreState extends ConsumerState<BackupAndRestore>
   final _isCompleter = ValueNotifier<bool?>(null);
   DAVProps? _lastProps;
   DAVClient? _client;
+  int _davClientUpdateToken = 0;
 
   Future<void> _updateDAVClient(DAVProps? props) async {
     _client = props == null ? null : DAVClient(props);
@@ -39,18 +40,32 @@ class _BackupAndRestoreState extends ConsumerState<BackupAndRestore>
     _lastProps = props;
     if (rawProps == rawLastProps) {
       return;
-    } else {
-      _isCompleter.value == null;
-      final res = await _client?.ping() ?? false;
-      if (mounted) {
-        _isCompleter.value = res;
-      }
+    }
+    final updateToken = ++_davClientUpdateToken;
+    if (props == null) {
+      _isCompleter.value = null;
+      return;
+    }
+    _isCompleter.value = null;
+    final res = await _client?.ping() ?? false;
+    if (mounted && updateToken == _davClientUpdateToken) {
+      _isCompleter.value = res;
     }
   }
 
   @override
   void initState() {
     super.initState();
+    ref.listenManual<DAVProps?>(davSettingProvider, (_, next) {
+      _updateDAVClient(next);
+    }, fireImmediately: true);
+  }
+
+  @override
+  void dispose() {
+    _davClientUpdateToken++;
+    _isCompleter.dispose();
+    super.dispose();
   }
 
   Future<void> _showAddWebDAV(DAVProps? dav) async {
@@ -138,10 +153,18 @@ class _BackupAndRestoreState extends ConsumerState<BackupAndRestore>
 
   Future<void> _restoreOnLocal(RestoreOption option) async {
     final appLocalizations = context.appLocalizations;
-    final file = await picker.pickerFile(withData: false);
-    final path = file?.path;
-    if (path == null) return;
-    await File(path).safeCopy(await appPath.backupFilePath);
+    final file = await picker.pickerFile(withData: system.isOhos);
+    if (file == null) return;
+    final backupFilePath = await appPath.backupFilePath;
+    if (system.isOhos) {
+      final bytes = file.bytes;
+      if (bytes == null) return;
+      await File(backupFilePath).safeWriteAsBytes(bytes);
+    } else {
+      final path = file.path;
+      if (path == null) return;
+      await File(path).safeCopy(backupFilePath);
+    }
     final res = await globalState.loadingRun<bool>(
       () async {
         await globalState.container
@@ -201,7 +224,6 @@ class _BackupAndRestoreState extends ConsumerState<BackupAndRestore>
     final appLocalizations = context.appLocalizations;
     final dav = ref.watch(davSettingProvider);
     final isLoading = ref.watch(loadingProvider(LoadingTag.backup_restore));
-    _updateDAVClient(dav);
     return CommonScaffold(
       isLoading: isLoading,
       title: appLocalizations.backupAndRestore,

@@ -105,6 +105,9 @@ class ProxyCard extends StatelessWidget {
         true => currentProxyName == proxy.name ? '' : proxy.name,
         false => proxy.name,
       };
+      commonPrint.log(
+        '[proxy-select] tap group=$groupName current=$currentProxyName next=$nextProxyName computed=$isComputedSelected selector=$isSelector',
+      );
       ref
           .read(profilesActionProvider.notifier)
           .updateCurrentSelectedMap(groupName, nextProxyName);

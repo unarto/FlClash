@@ -935,9 +935,19 @@ class AppLocalizations {
   }
 
   /// `The current application is already the latest version`
-  String get checkUpdateError {
+  String get checkUpdateLatest {
     return Intl.message(
       'The current application is already the latest version',
+      name: 'checkUpdateLatest',
+      desc: '',
+      args: [],
+    );
+  }
+
+  /// `The current application is already the latest version`
+  String get checkUpdateError {
+    return Intl.message(
+      'Failed to check for updates. Please try again later.',
       name: 'checkUpdateError',
       desc: '',
       args: [],

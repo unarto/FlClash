@@ -345,6 +345,7 @@ class _ModalSideSheetState<T> extends State<_ModalSideSheet<T>> {
       case TargetPlatform.android:
       case TargetPlatform.fuchsia:
       case TargetPlatform.linux:
+      case TargetPlatform.ohos:
       case TargetPlatform.windows:
         return localizations.dialogLabel;
     }

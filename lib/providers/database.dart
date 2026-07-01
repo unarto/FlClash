@@ -53,11 +53,12 @@ class Profiles extends _$Profiles {
   void put(Profile profile) {
     final previous = List<Profile>.from(state);
     final newProfile = previous.optimizeLabel(profile);
-    state = previous.copyAndPut(newProfile, (item) => item.id == newProfile.id);
+    final next = previous.copyAndPut(newProfile, (item) => item.id == newProfile.id);
+    state = next;
     unawaited(
       withRollback(
         snapshot: previous,
-        action: () => database.profiles.put(newProfile.toCompanion()),
+        action: () => database.profilesDao.setAll(next),
         rollback: (v) => state = v,
       ),
     );
@@ -129,7 +130,7 @@ class Profiles extends _$Profiles {
   }
 }
 
-@riverpod
+@Riverpod(keepAlive: true)
 class Scripts extends _$Scripts with AsyncNotifierMixin {
   @override
   Stream<List<Script>> build() {

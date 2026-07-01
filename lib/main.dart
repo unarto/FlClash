@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:fl_clash/pages/error.dart';
+import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,6 +17,7 @@ Future<void> main() async {
     if (system.isDesktop) {
       await RustLib.init();
     }
+    await CoreController.initOhosCoreBinary();
     final version = await system.version;
     final container = await globalState.init(version);
     HttpOverrides.global = FlClashHttpOverrides();

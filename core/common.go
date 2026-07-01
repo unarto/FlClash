@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -237,15 +238,170 @@ func updateConfig(params *UpdateParams) {
 	updateListeners()
 }
 
+func debugConfigInput(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		debugCoreLog("applyConfig read config failed path=%s err=%v", path, err)
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	var dnsListenLine string
+	var nameserverLine string
+	var defaultNameserverLine string
+	var nameserverPolicyLine string
+	var directNameserverLine string
+	var rulesHead []string
+	var rawInterestingLines []string
+	var rawSpecialRules []string
+	inNameserver := false
+	inDefaultNameserver := false
+	inRules := false
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "listen:") && dnsListenLine == "" {
+			dnsListenLine = trimmed
+		}
+		if strings.HasPrefix(trimmed, "nameserver:") && nameserverLine == "" {
+			nameserverLine = trimmed
+			inNameserver = true
+			inDefaultNameserver = false
+			continue
+		}
+		if strings.HasPrefix(trimmed, "default-nameserver:") && defaultNameserverLine == "" {
+			defaultNameserverLine = trimmed
+			inDefaultNameserver = true
+			inNameserver = false
+			continue
+		}
+		if inNameserver {
+			if strings.HasPrefix(trimmed, "- ") {
+				nameserverLine = strings.TrimSpace(nameserverLine + " " + trimmed)
+				continue
+			}
+			if trimmed != "" {
+				inNameserver = false
+			}
+		}
+		if inDefaultNameserver {
+			if strings.HasPrefix(trimmed, "- ") {
+				defaultNameserverLine = strings.TrimSpace(defaultNameserverLine + " " + trimmed)
+				continue
+			}
+			if trimmed != "" {
+				inDefaultNameserver = false
+			}
+		}
+		if strings.HasPrefix(trimmed, "nameserver-policy:") && nameserverPolicyLine == "" {
+			nameserverPolicyLine = trimmed
+		}
+		if strings.HasPrefix(trimmed, "direct-nameserver:") && directNameserverLine == "" {
+			directNameserverLine = trimmed
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "httpdns") ||
+			strings.Contains(lower, "browsercfg-drcn.cloud.dbankcloud.cn") ||
+			strings.Contains(lower, "youtube") {
+			rawInterestingLines = append(rawInterestingLines, fmt.Sprintf("%d:%s", index+1, trimmed))
+		}
+		if strings.HasPrefix(trimmed, "rules:") {
+			inRules = true
+			continue
+		}
+		if inRules {
+			if strings.HasPrefix(trimmed, "- ") {
+				rule := strings.TrimPrefix(trimmed, "- ")
+				rulesHead = append(rulesHead, rule)
+				if strings.Contains(rule, "RULE-SET") || strings.Contains(rule, "GEOSITE") {
+					rawSpecialRules = append(rawSpecialRules, fmt.Sprintf("%d:%s", index+1, rule))
+				}
+				if len(rulesHead) >= 14 {
+					continue
+				}
+				continue
+			}
+			if trimmed != "" {
+				break
+			}
+		}
+	}
+	debugCoreLog(
+		"applyConfig input path=%s bytes=%d dnsListen=%s nameserver=%s defaultNameserver=%s nameserverPolicy=%s directNameserver=%s rulesHead=%s",
+		path,
+		len(data),
+		dnsListenLine,
+		nameserverLine,
+		defaultNameserverLine,
+		nameserverPolicyLine,
+		directNameserverLine,
+		strings.Join(rulesHead, " || "),
+	)
+	debugCoreLog(
+		"applyConfig rawInteresting path=%s interesting=%s specialRules=%s",
+		path,
+		strings.Join(rawInterestingLines, " || "),
+		strings.Join(rawSpecialRules, " || "),
+	)
+}
+
 func applyConfig(params *SetupParams) error {
 	runtime.GC()
 	runLock.Lock()
 	defer runLock.Unlock()
 	var err error
 	constant.DefaultTestURL = params.TestURL
-	currentConfig, err = executor.ParseWithPath(filepath.Join(constant.Path.HomeDir(), "config.yaml"))
+	configPath := filepath.Join(constant.Path.HomeDir(), "config.yaml")
+	if fileInfo, statErr := os.Stat(configPath); statErr != nil {
+		debugCoreLog("applyConfig configPath=%s statErr=%v", configPath, statErr)
+	} else {
+		debugCoreLog(
+			"applyConfig configPath=%s size=%d mode=%s",
+			configPath,
+			fileInfo.Size(),
+			fileInfo.Mode(),
+		)
+	}
+	debugConfigInput(configPath)
+	currentConfig, err = executor.ParseWithPath(configPath)
 	if err != nil {
+		debugCoreLog("applyConfig parse failed configPath=%s err=%v", configPath, err)
 		currentConfig, _ = config.ParseRawConfig(config.DefaultRawConfig())
+		debugCoreLog("applyConfig fallback to default raw config")
+	} else {
+		debugCoreLog(
+			"applyConfig parsed configPath=%s mixedPort=%d port=%d socksPort=%d allowLan=%v controller=%s",
+			configPath,
+			currentConfig.General.MixedPort,
+			currentConfig.General.Port,
+			currentConfig.General.SocksPort,
+			currentConfig.General.AllowLan,
+			currentConfig.Controller.ExternalController,
+		)
+		debugCoreLog(
+			"applyConfig dns listen=%s nameserver=%v defaultNameserver=%v enhancedMode=%v proxyServerNameserver=%v directNameServer=%v directFollowPolicy=%v dnsHijack=%v",
+			currentConfig.DNS.Listen,
+			currentConfig.DNS.NameServer,
+			currentConfig.DNS.DefaultNameserver,
+			currentConfig.DNS.EnhancedMode,
+			currentConfig.DNS.ProxyServerNameserver,
+			currentConfig.DNS.DirectNameServer,
+			currentConfig.DNS.DirectFollowPolicy,
+			currentConfig.General.Tun.DNSHijack,
+		)
+		ruleCount := len(currentConfig.Rules)
+		ruleHead := 12
+		if ruleCount < ruleHead {
+			ruleHead = ruleCount
+		}
+		for i := 0; i < ruleHead; i++ {
+			rule := currentConfig.Rules[i]
+			debugCoreLog(
+				"applyConfig rule[%d]=type=%s payload=%s adapter=%s",
+				i,
+				rule.RuleType().String(),
+				rule.Payload(),
+				rule.Adapter(),
+			)
+		}
 	}
 	hub.ApplyConfig(currentConfig)
 	patchSelectGroup(params.SelectedMap)

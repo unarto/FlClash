@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/l10n/l10n.dart';
+import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/widgets/list.dart';
 import 'package:fl_clash/widgets/scaffold.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 @immutable
@@ -25,52 +28,118 @@ class Contributor {
 class AboutView extends StatelessWidget {
   const AboutView({super.key});
 
+  Future<void> _importQrTestImage(BuildContext context) async {
+    if (!system.isOhos) {
+      return;
+    }
+    try {
+      final bytes = await rootBundle.load('assets/images/jisu_qr_test.png');
+      final path = '${await appPath.tempPath}/jisu_qr_test.png';
+      await File(path).safeWriteAsBytes(bytes.buffer.asUint8List());
+      final prepared = await app?.prepareGalleryTestImage(
+        path,
+        title: 'flclash_qr_test',
+      );
+      final imported = prepared == null
+          ? null
+          : await app?.importImageToGallery(prepared, title: 'flclash_qr_test');
+      if (context.mounted) {
+        context.showNotifier(imported == null ? '导入图库失败' : '已导入图库');
+      }
+    } catch (_) {
+      if (context.mounted) {
+        context.showNotifier('导入图库失败');
+      }
+    }
+  }
+
   Future<void> _checkUpdate(BuildContext context) async {
-    final data = await globalState.safeRun<Map<String, dynamic>?>(
+    final result = await globalState.safeRun<CheckForUpdateResult>(
       request.checkForUpdate,
       title: context.appLocalizations.checkUpdate,
     );
+    if (result == null) {
+      return;
+    }
     globalState.container
         .read(commonActionProvider.notifier)
-        .checkUpdateResultHandle(data: data, isUser: true);
+        .checkUpdateResultHandle(result: result, isUser: true);
+  }
+
+  void _enableDeveloperMode(WidgetRef ref, BuildContext context) {
+    commonPrint.log('[developer-mode] onEnterDeveloperMode invoked');
+    ref
+        .read(appSettingProvider.notifier)
+        .update((state) => state.copyWith(developerMode: true));
+    commonPrint.log('[developer-mode] developerMode persisted=true');
+    context.showNotifier(context.appLocalizations.developerModeEnableTip);
   }
 
   List<Widget> _buildMoreSection(BuildContext context) {
     final appLocalizations = context.appLocalizations;
+    final items = <Widget>[
+      if (globalState.isPre && system.isOhos)
+        ListItem(
+          title: const Text('导入二维码测试图到图库'),
+          onTap: () {
+            _importQrTestImage(context);
+          },
+        ),
+      if (globalState.isPre && system.isOhos)
+        Consumer(
+          builder: (context, ref, _) {
+            final enabled = ref.watch(
+              appSettingProvider.select((state) => state.developerMode),
+            );
+            if (enabled) {
+              return Container();
+            }
+            return ListItem(
+              title: Text(appLocalizations.developerMode),
+              subtitle: const Text('OHOS 模拟器显式入口，用于验证开发者页面功能'),
+              onTap: () {
+                _enableDeveloperMode(ref, context);
+              },
+            );
+          },
+        ),
+      ListItem(
+        title: Text(appLocalizations.checkUpdate),
+        onTap: () {
+          _checkUpdate(context);
+        },
+      ),
+      ListItem(
+        title: const Text('Telegram'),
+        onTap: () {
+          commonPrint.log('[about-link] tap telegram');
+          globalState.openUrl('https://t.me/FlClash');
+        },
+        trailing: const Icon(Icons.launch),
+      ),
+      ListItem(
+        title: Text(appLocalizations.project),
+        onTap: () {
+          commonPrint.log('[about-link] tap project');
+          globalState.openUrl('https://github.com/$repository');
+        },
+        trailing: const Icon(Icons.launch),
+      ),
+      ListItem(
+        title: Text(appLocalizations.core),
+        onTap: () {
+          commonPrint.log('[about-link] tap core');
+          globalState.openUrl(
+            'https://github.com/chen08209/Clash.Meta/tree/FlClash',
+          );
+        },
+        trailing: const Icon(Icons.launch),
+      ),
+    ];
     return generateSection(
       separated: false,
       title: appLocalizations.more,
-      items: [
-        ListItem(
-          title: Text(appLocalizations.checkUpdate),
-          onTap: () {
-            _checkUpdate(context);
-          },
-        ),
-        ListItem(
-          title: const Text('Telegram'),
-          onTap: () {
-            globalState.openUrl('https://t.me/FlClash');
-          },
-          trailing: const Icon(Icons.launch),
-        ),
-        ListItem(
-          title: Text(appLocalizations.project),
-          onTap: () {
-            globalState.openUrl('https://github.com/$repository');
-          },
-          trailing: const Icon(Icons.launch),
-        ),
-        ListItem(
-          title: Text(appLocalizations.core),
-          onTap: () {
-            globalState.openUrl(
-              'https://github.com/chen08209/Clash.Meta/tree/FlClash',
-            );
-          },
-          trailing: const Icon(Icons.launch),
-        ),
-      ],
+      items: items,
     );
   }
 
@@ -146,12 +215,7 @@ class AboutView extends StatelessWidget {
                     ],
                   ),
                   onEnterDeveloperMode: () {
-                    ref
-                        .read(appSettingProvider.notifier)
-                        .update((state) => state.copyWith(developerMode: true));
-                    context.showNotifier(
-                      appLocalizations.developerModeEnableTip,
-                    );
+                    _enableDeveloperMode(ref, context);
                   },
                 );
               },
@@ -225,7 +289,9 @@ class _DeveloperModeDetectorState extends State<_DeveloperModeDetector> {
 
   void _handleTap() {
     _counter++;
+    commonPrint.log('[developer-mode] detector tap count=$_counter');
     if (_counter >= 5) {
+      commonPrint.log('[developer-mode] detector threshold reached');
       widget.onEnterDeveloperMode();
       _resetCounter();
     } else {
@@ -235,6 +301,7 @@ class _DeveloperModeDetectorState extends State<_DeveloperModeDetector> {
   }
 
   void _resetCounter() {
+    commonPrint.log('[developer-mode] detector reset count=$_counter');
     _counter = 0;
     _timer?.cancel();
     _timer = null;

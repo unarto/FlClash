@@ -1,0 +1,26 @@
+{
+  "modelVersion": "5.1.0",
+  "name": "fl_clash",
+  "version": "0.8.93",
+  "description": "FlClash OpenHarmony host project.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    "@ohos/flutter_ohos": "file:./har/flutter.har",
+    "flutter_native_arm64_v8a": "file:./har/flutter_native_arm64_v8a.har"
+  },
+  "devDependencies": {
+    "@ohos/hypium": "1.0.6"
+  },
+  "overrides": {
+    "@ohos/flutter_ohos": "file:./har/flutter.har",
+    "flutter_native_arm64_v8a": "file:/Users/liushangliang/.local/ohos-flutter-3.35.7/bin/cache/artifacts/engine/ohos-arm64-release/arm64_v8a_release.har",
+    "window_ext": "file:./har/window_ext.har",
+    "wifi_ssid": "file:./har/wifi_ssid.har",
+    "setup": "file:./har/setup.har",
+    "rust_api": "file:./har/rust_api.har",
+    "proxy": "file:./har/proxy.har",
+    "@ohos/flutter_module": "file:./entry"
+  }
+}

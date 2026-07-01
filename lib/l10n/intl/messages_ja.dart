@@ -154,7 +154,10 @@ class MessageLookup extends MessageLookupByLibrary {
     "cancel": MessageLookupByLibrary.simpleMessage("キャンセル"),
     "cancelSelectAll": MessageLookupByLibrary.simpleMessage("全選択解除"),
     "checkUpdate": MessageLookupByLibrary.simpleMessage("更新を確認"),
-    "checkUpdateError": MessageLookupByLibrary.simpleMessage("アプリは最新版です"),
+    "checkUpdateLatest": MessageLookupByLibrary.simpleMessage("アプリは最新版です"),
+    "checkUpdateError": MessageLookupByLibrary.simpleMessage(
+      "更新の確認に失敗しました。後でもう一度お試しください。",
+    ),
     "clearData": MessageLookupByLibrary.simpleMessage("データを消去"),
     "clipboardExport": MessageLookupByLibrary.simpleMessage("クリップボードにエクスポート"),
     "clipboardImport": MessageLookupByLibrary.simpleMessage("クリップボードからインポート"),

@@ -42,4 +42,10 @@ void main() {
       );
     });
   });
+
+  test('maps OHOS targets via platform directory', () {
+    final targets = Target.forPlatform('ohos');
+
+    expect(targets, [Target.ohosArm64]);
+  });
 }

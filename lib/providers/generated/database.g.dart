@@ -323,7 +323,7 @@ final class ScriptsProvider
         argument: null,
         retry: null,
         name: r'scriptsProvider',
-        isAutoDispose: true,
+        isAutoDispose: false,
         dependencies: null,
         $allTransitiveDependencies: null,
       );

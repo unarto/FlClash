@@ -40,9 +40,7 @@ class Logs extends _$Logs with AutoDisposeNotifierMixin {
     final tempFilePath = await appPath.tempFilePath;
     final file = File(tempFilePath);
     await file.safeWriteAsString(logString);
-    bool res = false;
-    res = await picker.saveFileWithPath(utils.logFile, tempFilePath) != null;
-    return res;
+    return await picker.saveFileWithPath(utils.logFile, tempFilePath) != null;
   }
 }
 
@@ -74,7 +72,8 @@ class Providers extends _$Providers with AutoDisposeNotifierMixin {
   }
 
   Future<void> syncProviders() async {
-    value = await coreController.getExternalProviders();
+    final providers = await coreController.getExternalProviders();
+    value = providers;
   }
 }
 

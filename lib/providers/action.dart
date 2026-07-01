@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/core.dart';
@@ -14,8 +15,139 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:yaml/yaml.dart';
 
 part 'generated/action.g.dart';
+
+final _selectedMapMetaValuePattern = RegExp(r'^(剩余流量：|距离下次重置剩余：|套餐到期：)');
+
+bool isInvalidSelectedProxyName(String proxyName) {
+  final trimmed = proxyName.trim();
+  if (trimmed.isEmpty) {
+    return true;
+  }
+  return _selectedMapMetaValuePattern.hasMatch(trimmed);
+}
+
+String? inferGlobalSelection({
+  required Map<String, String> selectedMap,
+  required Iterable<String> groupNames,
+}) {
+  final availableNames = groupNames
+      .where((name) => name.isNotEmpty && name != GroupName.GLOBAL.name)
+      .toSet();
+  for (final groupName in selectedMap.keys) {
+    if (groupName == GroupName.GLOBAL.name) {
+      continue;
+    }
+    if (availableNames.isEmpty || availableNames.contains(groupName)) {
+      return groupName;
+    }
+  }
+  if (availableNames.isNotEmpty) {
+    return availableNames.first;
+  }
+  return null;
+}
+
+bool _selectedMapsEqual(Map<String, String> current, Map<String, String> next) {
+  if (identical(current, next)) {
+    return true;
+  }
+  if (current.length != next.length) {
+    return false;
+  }
+  for (final entry in current.entries) {
+    if (next[entry.key] != entry.value) {
+      return false;
+    }
+  }
+  return true;
+}
+
+Map<String, String> sanitizeSelectedMap({
+  required List<Group> groups,
+  required Map<String, String> selectedMap,
+}) {
+  if (selectedMap.isEmpty) {
+    return selectedMap;
+  }
+
+  final sanitized = <String, String>{};
+  selectedMap.forEach((groupName, proxyName) {
+    if (isInvalidSelectedProxyName(proxyName)) {
+      return;
+    }
+    if (groups.isEmpty) {
+      sanitized[groupName] = proxyName;
+      return;
+    }
+    final group = groups.where((item) => item.name == groupName).firstOrNull;
+    if (group == null) {
+      return;
+    }
+    final exists = group.all.any((proxy) => proxy.name == proxyName);
+    if (exists) {
+      sanitized[groupName] = proxyName;
+    }
+  });
+  if (sanitized.length != selectedMap.length) {
+    commonPrint.log('[selected-map] sanitized from=$selectedMap to=$sanitized');
+  }
+  return sanitized;
+}
+
+void persistSanitizedSelectedMap(Ref ref, Map<String, String> selectedMap) {
+  final currentProfile = ref.read(currentProfileProvider);
+  if (currentProfile == null) return;
+  if (_selectedMapsEqual(currentProfile.selectedMap, selectedMap)) {
+    return;
+  }
+  commonPrint.log(
+    '[selected-map] persist sanitized profile=${currentProfile.id} '
+    'from=${currentProfile.selectedMap} to=$selectedMap',
+  );
+  ref
+      .read(profilesProvider.notifier)
+      .put(currentProfile.copyWith(selectedMap: selectedMap));
+}
+
+bool shouldUseOhosVpnConfigOnly({
+  required bool isOhos,
+  required bool vpnEnabled,
+}) {
+  return isOhos && vpnEnabled;
+}
+
+bool shouldUseCoreProfileConfigForSetup({
+  required bool isOhos,
+  required bool applyCore,
+}) {
+  return !(isOhos && !applyCore);
+}
+
+bool resolveUseCoreProfileConfigForSetup({
+  required bool? explicitUseCoreProfileConfig,
+  required bool isOhos,
+  required bool applyCore,
+}) {
+  return explicitUseCoreProfileConfig ??
+      shouldUseCoreProfileConfigForSetup(isOhos: isOhos, applyCore: applyCore);
+}
+
+class _OhosVpnStopRollbackState {
+  final DateTime? startTime;
+  final CoreStatus coreStatus;
+  final FixedList<Traffic> traffics;
+  final Traffic totalTraffic;
+
+  const _OhosVpnStopRollbackState({
+    required this.startTime,
+    required this.coreStatus,
+    required this.traffics,
+    required this.totalTraffic,
+  });
+}
 
 @Riverpod(keepAlive: true)
 class CommonAction extends _$CommonAction {
@@ -65,15 +197,43 @@ class CommonAction extends _$CommonAction {
   }
 
   Future<void> autoCheckUpdate() async {
-    if (!ref.read(appSettingProvider).autoCheckUpdate) return;
+    final enabled = ref.read(appSettingProvider).autoCheckUpdate;
+    commonPrint.log('[auto-check-update] enabled=$enabled');
+    if (!enabled) {
+      commonPrint.log('[auto-check-update] skip request');
+      return;
+    }
+    commonPrint.log('[auto-check-update] request start');
     final res = await request.checkForUpdate();
-    checkUpdateResultHandle(data: res);
+    commonPrint.log(
+      '[auto-check-update] request done status=${res.status.name}',
+    );
+    checkUpdateResultHandle(result: res);
   }
 
   Future<void> checkUpdateResultHandle({
-    Map<String, dynamic>? data,
+    required CheckForUpdateResult result,
     bool isUser = false,
   }) async {
+    if (result.status == CheckForUpdateStatus.failed) {
+      if (isUser) {
+        globalState.showMessage(
+          title: currentAppLocalizations.checkUpdate,
+          message: TextSpan(text: currentAppLocalizations.checkUpdateError),
+        );
+      }
+      return;
+    }
+    if (result.status == CheckForUpdateStatus.upToDate) {
+      if (isUser) {
+        globalState.showMessage(
+          title: currentAppLocalizations.checkUpdate,
+          message: TextSpan(text: currentAppLocalizations.checkUpdateLatest),
+        );
+      }
+      return;
+    }
+    final data = result.data;
     if (data != null) {
       final tagName = data['tag_name'];
       final body = data['body'];
@@ -101,11 +261,6 @@ class CommonAction extends _$CommonAction {
             .read(appSettingProvider.notifier)
             .update((state) => state.copyWith(autoCheckUpdate: false));
       }
-    } else if (isUser) {
-      globalState.showMessage(
-        title: currentAppLocalizations.checkUpdate,
-        message: TextSpan(text: currentAppLocalizations.checkUpdateError),
-      );
     }
   }
 }
@@ -114,51 +269,229 @@ class CommonAction extends _$CommonAction {
 class SetupAction extends _$SetupAction {
   Timer? _updateTimer;
   DateTime? startTime;
+  _OhosVpnStopRollbackState? _ohosVpnStopRollbackState;
+  @visibleForTesting
+  Future<void> Function({required bool syncCoreState})?
+  resumeAfterFailedOhosVpnStop;
+  List<String> _lastProfileGroupNames = const [];
+
+  @visibleForTesting
+  Future<bool> Function({VoidCallback? preloadInvoke})? applyProfileOnInitStart;
+
+  @visibleForTesting
+  Future<bool> Function()? tryStartCoreForStatusStart;
+
+  @visibleForTesting
+  Future<bool> Function()? applyProfileForFallback;
+
+  @visibleForTesting
+  Future<bool> Function()? startCoreListener;
 
   bool get isStart => startTime != null && startTime!.isBeforeNow;
 
   @override
-  void build() {}
+  void build() {
+    applyProfileOnInitStart ??=
+        ({VoidCallback? preloadInvoke}) => applyProfile(
+          force: true,
+          preloadInvoke: preloadInvoke,
+        );
+    tryStartCoreForStatusStart ??=
+        () => ref.read(coreActionProvider.notifier).tryStartCore(true);
+    applyProfileForFallback ??= () => applyProfile(force: true, silence: true);
+    startCoreListener ??= () => coreController.startListener();
+  }
+
+  SetupParams get setupParams => _setupParams;
+
+  Map<String, String> _sanitizeSelectedMap(Map<String, String> selectedMap) {
+    final groups = ref.read(groupsProvider);
+    return sanitizeSelectedMap(groups: groups, selectedMap: selectedMap);
+  }
+
+  Map<String, String> _withGlobalSelectionFallback(
+    Map<String, String> selectedMap,
+  ) {
+    final mode = ref.read(
+      patchClashConfigProvider.select((state) => state.mode),
+    );
+    if (mode != Mode.global || selectedMap.containsKey(GroupName.GLOBAL.name)) {
+      return selectedMap;
+    }
+    final groups = ref.read(groupsProvider);
+    final fallback = inferGlobalSelection(
+      selectedMap: selectedMap,
+      groupNames: groups.isNotEmpty
+          ? groups.map((group) => group.name)
+          : _lastProfileGroupNames,
+    );
+    if (fallback == null) {
+      return selectedMap;
+    }
+    final nextSelectedMap = Map<String, String>.from(selectedMap)
+      ..[GroupName.GLOBAL.name] = fallback;
+    commonPrint.log(
+      '[selected-map] inferred GLOBAL fallback=$fallback '
+      'from=$selectedMap groups=${groups.map((group) => group.name).join(",")} '
+      'profileGroups=${_lastProfileGroupNames.join(",")}',
+    );
+    return nextSelectedMap;
+  }
 
   SetupParams get _setupParams {
-    final selectedMap = ref.read(selectedMapProvider);
+    final selectedMap = _withGlobalSelectionFallback(
+      _sanitizeSelectedMap(ref.read(selectedMapProvider)),
+    );
     final testUrl = ref.read(
       appSettingProvider.select((state) => state.testUrl),
     );
     return SetupParams(selectedMap: selectedMap, testUrl: testUrl);
   }
 
-  void fullSetup() {
-    if (!ref.read(initProvider)) return;
-    ref.read(delayDataSourceProvider.notifier).value = {};
-    applyProfile(force: true);
-    ref.read(logsProvider.notifier).value = FixedList(500);
-    ref.read(requestsProvider.notifier).value = FixedList(500);
+  Future<Map<String, dynamic>> _getProfileConfigMap(
+    int profileId, {
+    bool useCore = true,
+  }) async {
+    final profilePath = await appPath.getProfilePath(profileId.toString());
+    Map<String, dynamic> data;
+    if (useCore) {
+      data = await coreController.getConfig(profileId);
+    } else {
+      final profileFile = File(profilePath);
+      final content = await profileFile.readAsString();
+      final rawYaml = loadYaml(content);
+      if (rawYaml is! YamlMap) {
+        throw 'profile config is invalid';
+      }
+      data = Map<String, dynamic>.from(
+        jsonDecode(jsonEncode(rawYaml)) as Map<String, dynamic>,
+      );
+    }
+    if (data.containsKey('rule') && !data.containsKey('rules')) {
+      data['rules'] = data['rule'];
+      data.remove('rule');
+    }
+    try {
+      final rules = (data['rules'] as List? ?? const [])
+          .map((item) => item.toString())
+          .toList();
+      final huaweiRules = rules
+          .where(
+            (rule) =>
+                rule.contains('httpdns.platform.dbankcloud.com') ||
+                rule.contains('httpdns-browser.platform.dbankcloud.cn') ||
+                rule.contains('browsercfg-drcn.cloud.dbankcloud.cn'),
+          )
+          .take(12)
+          .join(' || ');
+      commonPrint.log(
+        '[profile-config] profile=$profileId useCore=$useCore path=$profilePath '
+        'rulesHead=${rules.take(12).join(" || ")} huaweiRules=$huaweiRules',
+      );
+    } catch (e) {
+      commonPrint.log(
+        '[profile-config] profile=$profileId useCore=$useCore path=$profilePath summary failed error=$e',
+      );
+    }
+    return data;
   }
 
-  Future<void> _handleStart() async {
+  Future<bool> fullSetup() async {
+    if (!ref.read(initProvider)) return false;
+    ref.read(delayDataSourceProvider.notifier).value = {};
+    final useOhosVpnConfigOnly = shouldUseOhosVpnConfigOnly(
+      isOhos: system.isOhos,
+      vpnEnabled: ref.read(vpnStateProvider).vpnProps.enable,
+    );
+    final applied = useOhosVpnConfigOnly
+        ? await prepareProfileConfigOnly(force: true)
+        : await applyProfile(force: true);
+    ref.read(logsProvider.notifier).value = FixedList(500);
+    ref.read(requestsProvider.notifier).value = FixedList(500);
+    return applied;
+  }
+
+  Future<void> _handleStart({
+    bool syncCoreState = true,
+  }) async {
     startTime ??= DateTime.now();
     //The local status must be updated when performing the run task
     ref.read(commonActionProvider.notifier).updateRunTime();
-    ref.read(commonActionProvider.notifier).updateTraffic();
-    if (!ref.read(suspendProvider)) {
-      await coreController.startListener();
+    if (syncCoreState) {
+      ref.read(commonActionProvider.notifier).updateTraffic();
     }
     _updateTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       ref.read(commonActionProvider.notifier).updateRunTime();
-      ref.read(commonActionProvider.notifier).updateTraffic();
+      if (syncCoreState) {
+        ref.read(commonActionProvider.notifier).updateTraffic();
+      }
     });
+    if (syncCoreState && !ref.read(suspendProvider)) {
+      final started = await startCoreListener!();
+      if (!started) {
+        await handleStop(syncCoreState: false);
+        throw StateError('startListener failed');
+      }
+    }
   }
 
   Future _updateStartTime() async {
     startTime = await service?.getRunTime();
   }
 
-  Future handleStop() async {
+  Future handleStop({bool syncCoreState = true}) async {
     startTime = null;
     _updateTimer?.cancel();
     _updateTimer = null;
-    await coreController.stopListener();
+    if (syncCoreState) {
+      await coreController.stopListener();
+    }
+  }
+
+  void _captureOhosVpnStopRollbackState() {
+    _ohosVpnStopRollbackState = _OhosVpnStopRollbackState(
+      startTime: startTime,
+      coreStatus: ref.read(coreStatusProvider),
+      traffics: ref.read(trafficsProvider).copyWith(),
+      totalTraffic: ref.read(totalTrafficProvider),
+    );
+  }
+
+  void clearOhosVpnStopRollbackState() {
+    _ohosVpnStopRollbackState = null;
+  }
+
+  Future<bool> restoreOhosVpnStateAfterFailedStop() async {
+    final rollbackState = _ohosVpnStopRollbackState;
+    if (rollbackState == null) {
+      return false;
+    }
+    try {
+      await (resumeAfterFailedOhosVpnStop ??
+          ({required bool syncCoreState}) async {
+            await _handleStart(syncCoreState: syncCoreState);
+          })(syncCoreState: rollbackState.coreStatus == CoreStatus.connected);
+    } catch (error, stackTrace) {
+      commonPrint.log(
+        '[OHOS-VPN] restore local state after failed stop failed: '
+        '$error stack: $stackTrace',
+        logLevel: LogLevel.warning,
+      );
+      clearOhosVpnStopRollbackState();
+      return false;
+    }
+    startTime = rollbackState.startTime;
+    ref.read(commonActionProvider.notifier).updateRunTime();
+    ref.read(coreStatusProvider.notifier).value = rollbackState.coreStatus;
+    ref.read(trafficsProvider.notifier).value = rollbackState.traffics.copyWith();
+    ref.read(totalTrafficProvider.notifier).value = rollbackState.totalTraffic;
+    clearOhosVpnStopRollbackState();
+    return true;
+  }
+
+  @visibleForTesting
+  void captureOhosVpnStopRollbackStateForTest() {
+    _captureOhosVpnStopRollbackState();
   }
 
   Future<void> initStatus() async {
@@ -173,40 +506,133 @@ class SetupAction extends _$SetupAction {
     final status = isStart == true
         ? true
         : ref.read(appSettingProvider).autoRun;
+    final useOhosVpnConfigOnly = shouldUseOhosVpnConfigOnly(
+      isOhos: system.isOhos,
+      vpnEnabled: ref.read(vpnStateProvider).vpnProps.enable,
+    );
     if (status == true) {
       await updateStatus(true, isInit: true);
     } else {
-      await applyProfile(force: true);
+      final applied = useOhosVpnConfigOnly
+          ? await prepareProfileConfigOnly(force: true)
+          : await applyProfile(force: true);
+      if (!applied) {
+        await _fallbackCurrentProfile(
+          useOhosVpnConfigOnly: useOhosVpnConfigOnly,
+        );
+      }
     }
   }
 
-  Future<void> updateStatus(bool isStart, {bool isInit = false}) async {
+  Future<void> _fallbackCurrentProfile({
+    bool useOhosVpnConfigOnly = false,
+  }) async {
+    final currentProfileId = ref.read(currentProfileIdProvider);
+    final profiles = ref.read(profilesProvider);
+    for (final profile in profiles) {
+      if (profile.id == currentProfileId) {
+        continue;
+      }
+      ref.read(currentProfileIdProvider.notifier).value = profile.id;
+      final applied = useOhosVpnConfigOnly
+          ? await prepareProfileConfigOnly(force: true)
+          : await applyProfileForFallback!();
+      if (applied) {
+        return;
+      }
+    }
+    ref.read(currentProfileIdProvider.notifier).value = currentProfileId;
+  }
+
+  @visibleForTesting
+  Future<void> fallbackCurrentProfileForTest({
+    bool useOhosVpnConfigOnly = false,
+  }) {
+    return _fallbackCurrentProfile(
+      useOhosVpnConfigOnly: useOhosVpnConfigOnly,
+    );
+  }
+
+  Future<void> updateStatus(
+    bool isStart, {
+    bool isInit = false,
+    bool captureOhosVpnStopRollbackState = true,
+  }) async {
+    final useOhosVpnConfigOnly = shouldUseOhosVpnConfigOnly(
+      isOhos: system.isOhos,
+      vpnEnabled: ref.read(vpnStateProvider).vpnProps.enable,
+    );
     if (isStart) {
       if (!isInit) {
-        final res = await ref
-            .read(coreActionProvider.notifier)
-            .tryStartCore(true);
-        if (res) return;
+        if (!useOhosVpnConfigOnly) {
+          final res = await tryStartCoreForStatusStart!();
+          if (res) return;
+          if (ref.read(coreStatusProvider) != CoreStatus.connected) {
+            ref.read(runTimeProvider.notifier).value = null;
+            return;
+          }
+        }
         if (!ref.read(initProvider)) return;
-        await _handleStart();
-        applyProfileDebounce(force: true, silence: true);
+        if (useOhosVpnConfigOnly) {
+          final prepared = await prepareProfileConfigOnly(force: true);
+          if (!prepared) {
+            ref.read(runTimeProvider.notifier).value = null;
+            return;
+          }
+          await _handleStart();
+          // OHOS VPN: the VPN-process core now dials the main app's CoreService
+          // socket, so subscribe to it for live status/traffic/connections and
+          // reflect the established link in the dashboard status chip.
+          ref.read(coreStatusProvider.notifier).value = CoreStatus.connected;
+        } else {
+          await _handleStart();
+          applyProfileDebounce(force: true, silence: true);
+        }
       } else {
-        globalState.needInitStatus = false;
         ref.read(runTimeProvider.notifier).value = 0;
         try {
-          await applyProfile(
-            force: true,
-            preloadInvoke: () async {
-              await _handleStart();
-            },
-          );
+          if (useOhosVpnConfigOnly) {
+            final prepared = await prepareProfileConfigOnly(force: true);
+            if (!prepared) {
+              ref.read(runTimeProvider.notifier).value = null;
+              return;
+            }
+            await _handleStart();
+            // OHOS VPN: subscribe to the now-linked VPN-process core and reflect
+            // the established link in the dashboard status chip.
+            ref.read(coreStatusProvider.notifier).value = CoreStatus.connected;
+            globalState.needInitStatus = false;
+          } else {
+            final applied = await applyProfileOnInitStart!(
+              preloadInvoke: () async {
+                await _handleStart();
+              },
+            );
+            if (!applied) {
+              ref.read(runTimeProvider.notifier).value = null;
+              return;
+            }
+            globalState.needInitStatus = false;
+          }
         } catch (_) {
           ref.read(runTimeProvider.notifier).value = null;
         }
       }
     } else {
-      await handleStop();
-      coreController.resetTraffic();
+      if (useOhosVpnConfigOnly &&
+          captureOhosVpnStopRollbackState &&
+          ref.read(isStartProvider)) {
+        _captureOhosVpnStopRollbackState();
+      } else if (!captureOhosVpnStopRollbackState) {
+        clearOhosVpnStopRollbackState();
+      }
+      await handleStop(syncCoreState: !useOhosVpnConfigOnly);
+      if (useOhosVpnConfigOnly) {
+        ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
+      } else {
+        clearOhosVpnStopRollbackState();
+        coreController.resetTraffic();
+      }
       ref.read(trafficsProvider.notifier).clear();
       ref.read(totalTrafficProvider.notifier).value = const Traffic();
       ref.read(runTimeProvider.notifier).value = null;
@@ -263,12 +689,12 @@ class SetupAction extends _$SetupAction {
     });
   }
 
-  Future<void> applyProfile({
+  Future<bool> applyProfile({
     bool silence = false,
     bool force = false,
     VoidCallback? preloadInvoke,
   }) async {
-    await _setupConfig(
+    return _setupConfig(
       force: force,
       silence: silence,
       preloadInvoke: preloadInvoke,
@@ -279,13 +705,18 @@ class SetupAction extends _$SetupAction {
     );
   }
 
+  Future<bool> prepareProfileConfigOnly({bool force = false}) async {
+    return _setupConfig(force: force, silence: true, applyCore: false);
+  }
+
   Future<VM2<String, String>> getProfile({
     required SetupState setupState,
     required PatchClashConfig patchConfig,
+    bool useCoreProfileConfig = true,
   }) async {
     final profileId = setupState.profileId;
     if (profileId == null) return const VM2('', '');
-    final defaultUA = globalState.packageInfo.ua;
+    final defaultUA = globalState.packageInfo.providerCompatibleUa;
     final networkVM2 = ref.read(
       networkSettingProvider.select(
         (state) => VM2(state.appendSystemDns, state.routeMode),
@@ -294,7 +725,10 @@ class SetupAction extends _$SetupAction {
     final overrideDns = ref.read(overrideDnsProvider);
     final appendSystemDns = networkVM2.a;
     final routeMode = networkVM2.b;
-    final configMap = await coreController.getConfig(profileId);
+    final configMap = await _getProfileConfigMap(
+      profileId,
+      useCore: useCoreProfileConfig,
+    );
     String? scriptContent;
     final List<Rule> addedRules = [];
     final List<ProxyGroup> proxyGroups = [];
@@ -353,7 +787,13 @@ class SetupAction extends _$SetupAction {
       final code = await system.authorizeCore();
       switch (code) {
         case AuthorizeCode.success:
-          await ref.read(coreActionProvider.notifier).restartCore();
+          ref.read(realTunEnableProvider.notifier).value = enableTun;
+          final restarted = await ref
+              .read(coreActionProvider.notifier)
+              .restartCore();
+          if (!restarted) {
+            return Result.error('');
+          }
           return Result.error('');
         case AuthorizeCode.none:
           break;
@@ -366,42 +806,125 @@ class SetupAction extends _$SetupAction {
     return Result.success(enableTun);
   }
 
-  Future<void> _setupConfig({
+  Future<bool> _setupConfig({
     bool force = false,
     bool silence = false,
+    bool applyCore = true,
+    bool? useCoreProfileConfig,
     VoidCallback? preloadInvoke,
     FutureOr Function()? onUpdated,
   }) async {
     var profile = ref.read(currentProfileProvider);
-    final nextProfile = await profile?.checkAndUpdateAndCopy();
+    if (profile == null) {
+      commonPrint.log('setup skip: no current profile');
+      return false;
+    }
+    final nextProfile = await profile.checkAndUpdateAndCopy();
     if (nextProfile != null) {
       profile = nextProfile;
       ref.read(profilesProvider.notifier).put(nextProfile);
     }
-    commonPrint.log('setup ===> ${profile?.id}');
+    commonPrint.log('setup ===> ${profile.id}');
     final patchConfig = ref.read(patchClashConfigProvider);
     final res = await _requestAdmin(patchConfig.tun.enable);
-    if (res.isError) return;
+    if (res.isError) return false;
     final realTunEnable = ref.read(realTunEnableProvider);
     final realPatchConfig = patchConfig.copyWith.tun(enable: realTunEnable);
-    final setupState = await ref.read(setupStateProvider(profile?.id).future);
-    if (system.isAndroid) {
+    final setupState = await ref.read(setupStateProvider(profile.id).future);
+    final resolvedUseCoreProfileConfig = resolveUseCoreProfileConfigForSetup(
+      explicitUseCoreProfileConfig: useCoreProfileConfig,
+      isOhos: system.isOhos,
+      applyCore: applyCore,
+    );
+    if (system.isAndroid || system.isOhos) {
       globalState.lastVpnState = ref.read(vpnStateProvider);
+    }
+    if (system.isAndroid) {
       final sharedState = ref.read(sharedStateProvider);
       preferences.saveShareState(sharedState);
     }
     final vm2 = await getProfile(
       setupState: setupState,
       patchConfig: realPatchConfig,
+      useCoreProfileConfig: resolvedUseCoreProfileConfig,
     );
     final yamlString = vm2.a;
     final yamlMd5 = vm2.b;
-    if (yamlMd5 == globalState.lastConfigMd5 && force == false) return;
-    await globalState.loadingRun(
+    try {
+      final yamlMap = loadYaml(yamlString);
+      if (yamlMap is YamlMap) {
+        final raw = jsonDecode(jsonEncode(yamlMap)) as Map<String, dynamic>;
+        final proxyGroups = (raw['proxy-groups'] as List? ?? const [])
+            .whereType<Map>()
+            .map((item) => item['name']?.toString() ?? '')
+            .where((name) => name.isNotEmpty)
+            .toList();
+        _lastProfileGroupNames = proxyGroups;
+        final globalUa = raw['global-ua'];
+        final dns = Map<String, dynamic>.from(raw['dns'] as Map? ?? const {});
+        final tun = Map<String, dynamic>.from(raw['tun'] as Map? ?? const {});
+        final proxyProviders = Map<String, dynamic>.from(
+          raw['proxy-providers'] ?? const {},
+        );
+        final providerSummary = proxyProviders.entries
+            .map((entry) {
+              final value = Map<String, dynamic>.from(
+                entry.value as Map? ?? const {},
+              );
+              return '${entry.key}|${value['type'] ?? ''}|${value['url'] ?? ''}|${value['path'] ?? ''}';
+            })
+            .join('; ');
+        commonPrint.log(
+          '[setup-profile] profile=${profile.id} ua=$globalUa '
+          'dnsEnable=${dns['enable']} dnsListen=${dns['listen']} '
+          'dnsNameserver=${dns['nameserver']} defaultDns=${dns['default-nameserver']} '
+          'enhancedMode=${dns['enhanced-mode']} tunDnsHijack=${tun['dns-hijack']} '
+          'tunRouteAddress=${tun['route-address']} '
+          'groups=${proxyGroups.join(",")} providers=$providerSummary',
+        );
+        final rules = (raw['rules'] as List? ?? const [])
+            .map((item) => item.toString())
+            .toList();
+        commonPrint.log(
+          '[setup-profile] rulesHead=${rules.take(12).join(" || ")}',
+        );
+        final directHuaweiHttpDnsRules = rules
+            .where(
+              (rule) =>
+                  rule.contains('httpdns.platform.dbankcloud.com') ||
+                  rule.contains('httpdns-browser.platform.dbankcloud.cn') ||
+                  rule.contains('browsercfg-drcn.cloud.dbankcloud.cn'),
+            )
+            .take(12)
+            .join(' || ');
+        commonPrint.log(
+          '[setup-profile] huaweiRules=$directHuaweiHttpDnsRules',
+        );
+      }
+    } catch (e) {
+      commonPrint.log(
+        '[setup-profile] summary failed profile=${profile.id} error=$e',
+      );
+    }
+    if (yamlMd5 == globalState.lastConfigMd5 && force == false) return true;
+    final result = await globalState.loadingRun<bool>(
       () async {
         final configFilePath = await appPath.configFilePath;
         await File(configFilePath).safeWriteAsString(yamlString);
+        final configFile = File(configFilePath);
+        final configExists = await configFile.exists();
+        final configLength = configExists ? await configFile.length() : -1;
+        commonPrint.log(
+          '[setup-profile] wrote config path=$configFilePath '
+          'exists=$configExists bytes=$configLength md5=$yamlMd5',
+        );
         globalState.lastConfigMd5 = yamlMd5;
+        if (!applyCore) {
+          commonPrint.log(
+            '[setup-profile] skip core setup and only persist config',
+          );
+          return true;
+        }
         final message = await coreController.setupConfig(
           setupState: setupState,
           params: _setupParams,
@@ -412,10 +935,12 @@ class SetupAction extends _$SetupAction {
         }
         ref.read(checkIpNumProvider.notifier).add();
         await onUpdated?.call();
+        return true;
       },
       silence: true,
       tag: !silence ? LoadingTag.proxies : null,
     );
+    return result == true;
   }
 }
 
@@ -425,6 +950,7 @@ class BackupAction extends _$BackupAction {
   void build() {}
 
   Future<String> backup() async {
+    commonPrint.log('[backup-action] backup start');
     final res = await Future.wait([
       database.profilesDao.fileNames().get(),
       database.scriptsDao.fileNames().get(),
@@ -433,10 +959,16 @@ class BackupAction extends _$BackupAction {
     final scriptFileNames = res[1];
     final configMap = ref.read(configProvider).toJson();
     configMap['version'] = await preferences.getVersion();
-    return backupTask(configMap, [...profileFileNames, ...scriptFileNames]);
+    final backupPath = await backupTask(configMap, [
+      ...profileFileNames,
+      ...scriptFileNames,
+    ]);
+    commonPrint.log('[backup-action] backup done path=$backupPath');
+    return backupPath;
   }
 
   Future<void> restore(RestoreOption option) async {
+    commonPrint.log('[backup-action] restore start option=${option.name}');
     final restoreDirPath = await appPath.restoreDirPath;
     final restoreDir = Directory(restoreDirPath);
     final restoreStrategy = ref.read(
@@ -458,7 +990,7 @@ class BackupAction extends _$BackupAction {
       );
       final configMap = migrationData.configMap;
       if (option == RestoreOption.onlyProfiles || configMap == null) return;
-      final config = Config.fromJson(configMap);
+      final config = Config.realFromJson(configMap);
       ref.read(patchClashConfigProvider.notifier).value =
           config.patchClashConfig;
       ref.read(appSettingProvider.notifier).value = config.appSettingProps;
@@ -473,8 +1005,16 @@ class BackupAction extends _$BackupAction {
       ref.read(overrideDnsProvider.notifier).value = config.overrideDns;
       ref.read(networkSettingProvider.notifier).value = config.networkProps;
       ref.read(hotKeyActionsProvider.notifier).value = config.hotKeyActions;
+      await preferences.saveConfig(ref.read(configProvider));
+      commonPrint.log(
+        '[backup-action] restore persisted config option=${option.name} openLogs=${ref.read(appSettingProvider).openLogs}',
+      );
+      commonPrint.log(
+        '[backup-action] restore applied config option=${option.name}',
+      );
       return;
     } finally {
+      commonPrint.log('[backup-action] restore cleanup option=${option.name}');
       await restoreDir.safeDelete(recursive: true);
     }
   }
@@ -482,31 +1022,102 @@ class BackupAction extends _$BackupAction {
 
 @Riverpod(keepAlive: true)
 class CoreAction extends _$CoreAction {
+  @visibleForTesting
+  Future<String> Function() preloadCore = () => coreController.preload();
+
+  @visibleForTesting
+  Future<void> Function(bool isUser) shutdownCore =
+      (isUser) => coreController.shutdown(isUser);
+
+  @visibleForTesting
+  Future<void> Function()? initCoreOverride;
+
+  @visibleForTesting
+  void Function(String message) showCoreConnectFailure =
+      globalState.showNotifier;
+
+  @visibleForTesting
+  bool Function() isCoreCompleted = () => coreController.isCompleted;
+
+  @visibleForTesting
+  FutureOr<bool> Function() isCoreInit = () => coreController.isInit;
+
+  @visibleForTesting
+  Future<bool> Function(int version) runCoreInit =
+      (version) => coreController.init(version);
+
+  @visibleForTesting
+  Future<AuthorizeCode> Function() authorizeCore = () => system.authorizeCore();
+
+  @visibleForTesting
+  Future<bool> Function()? restartCoreAfterAuthorization;
+
+  @visibleForTesting
+  Future<bool> Function()? applyProfileAfterRestart;
+
   @override
-  void build() {}
+  void build() {
+    restartCoreAfterAuthorization ??= () => restartCore();
+    applyProfileAfterRestart ??=
+        () => ref.read(setupActionProvider.notifier).applyProfile(force: true);
+  }
 
   Future<void> initCore() async {
-    final isInit = await coreController.isInit;
-
     final version = ref.read(versionProvider);
+    commonPrint.log('[OHOS-CORE] initCore enter version=$version');
+    bool isInit;
+    try {
+      commonPrint.log('[OHOS-CORE] initCore before isInit');
+      final stopwatch = Stopwatch()..start();
+      isInit = await isCoreInit();
+      stopwatch.stop();
+      commonPrint.log(
+        '[OHOS-CORE] initCore after isInit value=$isInit elapsed=${stopwatch.elapsedMilliseconds}ms',
+      );
+    } catch (e, s) {
+      commonPrint.log(
+        '[OHOS-CORE] initCore isInit threw error=$e stack=$s',
+        logLevel: LogLevel.error,
+      );
+      rethrow;
+    }
+
     if (!isInit) {
-      final res = await coreController.init(version);
-      commonPrint.log('init result: $res');
+      try {
+        commonPrint.log('[OHOS-CORE] initCore before init version=$version');
+        final stopwatch = Stopwatch()..start();
+        final res = await runCoreInit(version);
+        stopwatch.stop();
+        commonPrint.log(
+          '[OHOS-CORE] initCore after init result=$res elapsed=${stopwatch.elapsedMilliseconds}ms',
+        );
+        if (!res) {
+          throw StateError('core init returned false');
+        }
+      } catch (e, s) {
+        commonPrint.log(
+          '[OHOS-CORE] initCore init threw error=$e stack=$s',
+          logLevel: LogLevel.error,
+        );
+        rethrow;
+      }
     } else {
+      commonPrint.log('[OHOS-CORE] initCore skip init and update groups');
       await ref.read(proxiesActionProvider.notifier).updateGroups();
     }
+    commonPrint.log('[OHOS-CORE] initCore exit');
   }
 
   Future<void> connectCore() async {
     ref.read(coreStatusProvider.notifier).value = CoreStatus.connecting;
     final result = await Future.wait([
-      coreController.preload(),
+      preloadCore(),
       Future.delayed(const Duration(milliseconds: 300)),
     ]);
     final String message = result[0];
     if (message.isNotEmpty) {
       ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
-      globalState.showNotifier(message);
+      showCoreConnectFailure(message);
       return;
     }
     ref.read(coreStatusProvider.notifier).value = CoreStatus.connected;
@@ -515,10 +1126,14 @@ class CoreAction extends _$CoreAction {
   Future<Result<bool>> requestAdmin(bool enableTun) async {
     final realTunEnable = ref.read(realTunEnableProvider);
     if (enableTun != realTunEnable && realTunEnable == false) {
-      final code = await system.authorizeCore();
+      final code = await authorizeCore();
       switch (code) {
         case AuthorizeCode.success:
-          await restartCore();
+          ref.read(realTunEnableProvider.notifier).value = enableTun;
+          final restarted = await restartCoreAfterAuthorization!();
+          if (!restarted) {
+            return Result.error('');
+          }
           return Result.error('');
         case AuthorizeCode.none:
           break;
@@ -531,26 +1146,32 @@ class CoreAction extends _$CoreAction {
     return Result.success(enableTun);
   }
 
-  Future<void> restartCore([bool start = false]) async {
+  Future<bool> restartCore([bool start = false]) async {
     final isDisconnected =
         ref.read(coreStatusProvider) == CoreStatus.disconnected;
     ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
-    await coreController.shutdown(!isDisconnected);
+    await shutdownCore(!isDisconnected);
     await connectCore();
-    await initCore();
+    if (ref.read(coreStatusProvider) != CoreStatus.connected) {
+      return false;
+    }
+    await (initCoreOverride ?? initCore)();
     if (start || ref.read(isStartProvider)) {
       await ref
           .read(setupActionProvider.notifier)
           .updateStatus(true, isInit: true);
     } else {
-      await ref.read(setupActionProvider.notifier).applyProfile(force: true);
+      final applied = await applyProfileAfterRestart!();
+      if (!applied) {
+        return false;
+      }
     }
+    return true;
   }
 
   Future<bool> tryStartCore([bool start = false]) async {
-    if (coreController.isCompleted) return false;
-    await restartCore(start);
-    return true;
+    if (isCoreCompleted()) return false;
+    return restartCore(start);
   }
 
   void handleCoreDisconnected() {
@@ -656,19 +1277,51 @@ class StoreAction extends _$StoreAction {
   void build() {}
 
   Future<void> shakingStore() async {
+    commonPrint.log('[developer-mode] shakingStore start');
     final profileIds = ref.read(
       profilesProvider.select((state) => state.map((item) => item.id)),
     );
-    final scriptIds = await ref.read(
-      scriptsProvider.future.select(
-        (state) async => (await state).map((item) => item.id),
+    commonPrint.log(
+      '[developer-mode] shakingStore profileIds=${profileIds.join(",")}',
+    );
+    commonPrint.log(
+      '[developer-mode] shakingStore await scriptsDao.query().get()',
+    );
+    final scripts = await database.scriptsDao.query().get();
+    commonPrint.log(
+      '[developer-mode] shakingStore scripts loaded count=${scripts.length}',
+    );
+    final scriptIds = scripts.map((item) => item.id);
+    commonPrint.log(
+      '[developer-mode] shakingStore scriptIds=${scriptIds.join(",")}',
+    );
+    final profilesPath = await appPath.profilesPath;
+    final scriptsDirPath = await appPath.scriptsDirPath;
+    final providersRootPath = await appPath.getProvidersRootPath();
+    commonPrint.log(
+      '[developer-mode] shakingStore paths profiles=$profilesPath scripts=$scriptsDirPath providers=$providersRootPath',
+    );
+    commonPrint.log('[developer-mode] shakingStore await shakingProfileTask');
+    final pathsToDelete = await shakingProfileTask(
+      VM3(
+        profileIds,
+        scriptIds,
+        VM3(profilesPath, scriptsDirPath, providersRootPath),
       ),
     );
-    final pathsToDelete = await shakingProfileTask(VM2(profileIds, scriptIds));
+    commonPrint.log(
+      '[developer-mode] shakingStore pathsToDelete=${pathsToDelete.length}',
+    );
     if (pathsToDelete.isNotEmpty) {
       final deleteFutures = pathsToDelete.map((path) async {
         try {
+          commonPrint.log(
+            '[developer-mode] shakingStore deleteFile start: $path',
+          );
           final res = await coreController.deleteFile(path);
+          commonPrint.log(
+            '[developer-mode] shakingStore deleteFile done: $path res=$res',
+          );
           if (res.isNotEmpty) throw res;
         } catch (e) {
           rethrow;
@@ -676,6 +1329,7 @@ class StoreAction extends _$StoreAction {
       });
       await Future.wait(deleteFutures);
     }
+    commonPrint.log('[developer-mode] shakingStore done');
   }
 
   void savePreferencesDebounce() {
@@ -689,11 +1343,36 @@ class StoreAction extends _$StoreAction {
     commonPrint.log('clear preferences');
     await database.close();
     await File(await appPath.databasePath).safeDelete(recursive: true);
-    final homeDir = Directory(await appPath.profilesPath);
-    await for (final file in homeDir.list(recursive: true)) {
-      await coreController.deleteFile(file.path);
-    }
+    final profilesDir = Directory(await appPath.profilesPath);
+    commonPrint.log('[developer-mode] clear profiles dir: ${profilesDir.path}');
+    await profilesDir.safeClear();
     await preferences.clearPreferences();
+    ref.read(patchClashConfigProvider.notifier).value =
+        const PatchClashConfig();
+    ref.read(appSettingProvider.notifier).value = const AppSettingProps();
+    ref.read(currentProfileIdProvider.notifier).value = null;
+    ref.read(davSettingProvider.notifier).value = null;
+    ref.read(themeSettingProvider.notifier).value = const ThemeProps();
+    ref.read(windowSettingProvider.notifier).value = const WindowProps();
+    ref.read(vpnSettingProvider.notifier).value = const VpnProps();
+    ref.read(proxiesStyleSettingProvider.notifier).value =
+        const ProxiesStyleProps();
+    ref.read(overrideDnsProvider.notifier).value = false;
+    ref.read(networkSettingProvider.notifier).value = const NetworkProps();
+    ref.read(hotKeyActionsProvider.notifier).value = [];
+    ref.read(excludeSSIDsProvider.notifier).value = [];
+    ref.read(profilesProvider.notifier).setAndReorder(const []);
+    ref.read(providersProvider.notifier).value = [];
+    ref.read(packagesProvider.notifier).value = [];
+    ref.read(logsProvider.notifier).value = FixedList(0);
+    ref.read(requestsProvider.notifier).value = FixedList(0);
+    ref.read(trafficsProvider.notifier).clear();
+    ref.read(totalTrafficProvider.notifier).value = const Traffic();
+    ref.read(runTimeProvider.notifier).value = null;
+    ref.read(localIpProvider.notifier).value = null;
+    ref.read(currentPageLabelProvider.notifier).value = PageLabel.dashboard;
+    ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
+    globalState.needInitStatus = true;
     ref.read(systemActionProvider.notifier).handleExit(false);
   }
 }
@@ -739,7 +1418,7 @@ class ProxiesAction extends _$ProxiesAction {
   Future<void> updateGroups() async {
     try {
       commonPrint.log('updateGroups');
-      ref.read(groupsProvider.notifier).value = await retry(
+      final groups = await retry(
         task: () async {
           final sortType = ref.read(
             proxiesStyleSettingProvider.select((state) => state.sortType),
@@ -748,8 +1427,13 @@ class ProxiesAction extends _$ProxiesAction {
           final testUrl = ref.read(
             appSettingProvider.select((state) => state.testUrl),
           );
-          final selectedMap = ref.read(
-            currentProfileProvider.select((state) => state?.selectedMap ?? {}),
+          final selectedMap = sanitizeSelectedMap(
+            groups: ref.read(groupsProvider),
+            selectedMap: ref.read(
+              currentProfileProvider.select(
+                (state) => state?.selectedMap ?? {},
+              ),
+            ),
           );
           return coreController.getProxiesGroups(
             selectedMap: selectedMap,
@@ -759,6 +1443,16 @@ class ProxiesAction extends _$ProxiesAction {
           );
         },
         retryIf: (res) => res.isEmpty,
+      );
+      ref.read(groupsProvider.notifier).value = groups;
+      persistSanitizedSelectedMap(
+        ref,
+        sanitizeSelectedMap(
+          groups: groups,
+          selectedMap: ref.read(
+            currentProfileProvider.select((state) => state?.selectedMap ?? {}),
+          ),
+        ),
       );
     } catch (e) {
       commonPrint.log('updateGroups error: $e');
@@ -814,9 +1508,14 @@ class ProxiesAction extends _$ProxiesAction {
         providerName: provider.name,
       );
       if (message.isNotEmpty) return message;
+      final updatedProvider = await coreController
+          .waitForExternalProviderUpdate(provider);
       ref
           .read(providersProvider.notifier)
-          .setProvider(await coreController.getExternalProvider(provider.name));
+          .setProvider(
+            updatedProvider ??
+                await coreController.getExternalProvider(provider.name),
+          );
       return '';
     } finally {
       ref.read(isUpdatingProvider(provider.updatingKey).notifier).value = false;
@@ -830,6 +1529,12 @@ class ProfilesAction extends _$ProfilesAction {
   void build() {}
 
   void updateCurrentSelectedMap(String groupName, String proxyName) {
+    if (isInvalidSelectedProxyName(proxyName)) {
+      commonPrint.log(
+        '[selected-map] reject invalid selection group=$groupName proxy=$proxyName',
+      );
+      return;
+    }
     final currentProfile = ref.read(currentProfileProvider);
     if (currentProfile != null &&
         currentProfile.selectedMap[groupName] != proxyName) {
@@ -892,11 +1597,17 @@ class ProfilesAction extends _$ProfilesAction {
     bool showLoading = false,
   }) async {
     try {
+      commonPrint.log(
+        '[profile-sync-action] begin id=${profile.id} label=${profile.realLabel} showLoading=$showLoading type=${profile.type.name} lastUpdate=${profile.lastUpdateDate?.toIso8601String()}',
+      );
       if (showLoading) {
         ref.read(isUpdatingProvider(profile.updatingKey).notifier).value = true;
       }
       ref.read(profilesProvider.notifier).put(profile);
       final newProfile = await profile.update();
+      commonPrint.log(
+        '[profile-sync-action] updated id=${newProfile.id} label=${newProfile.realLabel} lastUpdate=${newProfile.lastUpdateDate?.toIso8601String()}',
+      );
       ref.read(profilesProvider.notifier).put(newProfile);
       if (profile.id == ref.read(currentProfileIdProvider)) {
         ref
@@ -904,14 +1615,25 @@ class ProfilesAction extends _$ProfilesAction {
             .applyProfileDebounce(silence: true);
       }
     } finally {
+      commonPrint.log(
+        '[profile-sync-action] end id=${profile.id} label=${profile.realLabel}',
+      );
       ref.read(isUpdatingProvider(profile.updatingKey).notifier).value = false;
     }
   }
 
   Future<void> addProfileFormFile() async {
+    commonPrint.log('[profile-file-import] start');
     final platformFile = await globalState.safeRun(picker.pickerFile);
     final bytes = platformFile?.bytes;
-    if (bytes == null) return;
+    commonPrint.log(
+      '[profile-file-import] picked name=${platformFile?.name} '
+      'bytes=${bytes?.length ?? 0} path=${platformFile?.path}',
+    );
+    if (bytes == null) {
+      commonPrint.log('[profile-file-import] result: no-bytes');
+      return;
+    }
     globalState.navigatorKey.currentState?.popUntil((route) => route.isFirst);
     ref.read(currentPageLabelProvider.notifier).toProfiles();
     final profile = await globalState.loadingRun(
@@ -922,11 +1644,18 @@ class ProfilesAction extends _$ProfilesAction {
       title: currentAppLocalizations.addProfile,
     );
     if (profile != null) {
+      commonPrint.log(
+        '[profile-file-import] success: id=${profile.id} '
+        'type=${profile.type.name} label=${profile.label}',
+      );
       putProfile(profile);
+    } else {
+      commonPrint.log('[profile-file-import] result: null');
     }
   }
 
   Future<void> addProfileFormURL(String url) async {
+    commonPrint.log('[ohos-profile-url] addProfileFormURL start: $url');
     if (globalState.navigatorKey.currentState?.canPop() ?? false) {
       globalState.navigatorKey.currentState?.popUntil((route) => route.isFirst);
     }
@@ -939,7 +1668,12 @@ class ProfilesAction extends _$ProfilesAction {
       title: currentAppLocalizations.addProfile,
     );
     if (profile != null) {
+      commonPrint.log(
+        '[ohos-profile-url] addProfileFormURL success: id=${profile.id} type=${profile.type.name} label=${profile.label}',
+      );
       putProfile(profile);
+    } else {
+      commonPrint.log('[ohos-profile-url] addProfileFormURL result: null');
     }
   }
 
