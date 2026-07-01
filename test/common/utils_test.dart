@@ -1,6 +1,6 @@
 import 'package:fl_clash/common/utils.dart';
 import 'package:fl_clash/enum/enum.dart';
-import 'package:test/test.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   final utils = Utils();

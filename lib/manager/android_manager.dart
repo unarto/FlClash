@@ -26,7 +26,9 @@ class _AndroidContainerState extends ConsumerState<AndroidManager>
       prev,
       next,
     ) {
-      app?.updateExcludeFromRecents(next);
+      if (system.isAndroid) {
+        app?.updateExcludeFromRecents(next);
+      }
     }, fireImmediately: true);
     ref.listenManual(sharedStateProvider, (prev, next) {
       if (prev != next) {

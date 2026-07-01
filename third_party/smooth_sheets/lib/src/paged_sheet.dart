@@ -1,0 +1,1041 @@
+/// @docImport 'package:flutter/widgets.dart';
+/// @docImport 'draggable.dart';
+library;
+
+import 'dart:ui';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:navigator_resizable/navigator_resizable.dart';
+
+import 'activity.dart';
+import 'controller.dart';
+import 'draggable.dart';
+import 'gesture_proxy.dart';
+import 'model.dart';
+import 'model_owner.dart';
+import 'physics.dart';
+import 'scrollable.dart';
+import 'sheet.dart';
+import 'snap_grid.dart';
+import 'viewport.dart';
+
+const _kDefaultSnapGrid = SteplessSnapGrid(
+  minOffset: SheetOffset(0),
+  maxOffset: SheetOffset(1),
+);
+
+/// Holds default values for inheritable [PagedSheetRoute] and [PagedSheetPage]
+/// parameters in a [PagedSheet].
+@immutable
+class PagedSheetRouteThemeData {
+  /// Creates a [PagedSheetRouteThemeData] with the given defaults.
+  const PagedSheetRouteThemeData({
+    this.scrollConfiguration,
+    this.dragConfiguration,
+    this.transitionDuration,
+    this.initialOffset,
+    this.snapGrid,
+    this.transitionsBuilder,
+  });
+
+  /// The default scroll configuration for routes.
+  ///
+  /// Falls back to [SheetScrollConfiguration.disabled].
+  final SheetScrollConfiguration? scrollConfiguration;
+
+  /// The default drag configuration for routes.
+  ///
+  /// Falls back to [SheetDragConfiguration.new] with default values.
+  final SheetDragConfiguration? dragConfiguration;
+
+  /// The default transition duration for routes.
+  ///
+  /// Falls back to 300 milliseconds.
+  final Duration? transitionDuration;
+
+  /// The default initial offset for routes.
+  ///
+  /// Falls back to `SheetOffset(1)`.
+  final SheetOffset? initialOffset;
+
+  /// The default snap grid for routes.
+  ///
+  /// Falls back to a [SingleSnapGrid] with a single snap at `SheetOffset(1)`.
+  final SheetSnapGrid? snapGrid;
+
+  /// The default transitions builder for routes.
+  ///
+  /// Falls back to null, which means using the default transitions builder
+  /// based on the current [ThemeData.platform].
+  final RouteTransitionsBuilder? transitionsBuilder;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is PagedSheetRouteThemeData &&
+            runtimeType == other.runtimeType &&
+            scrollConfiguration == other.scrollConfiguration &&
+            dragConfiguration == other.dragConfiguration &&
+            transitionDuration == other.transitionDuration &&
+            initialOffset == other.initialOffset &&
+            snapGrid == other.snapGrid &&
+            transitionsBuilder == other.transitionsBuilder;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    runtimeType,
+    scrollConfiguration,
+    dragConfiguration,
+    transitionDuration,
+    initialOffset,
+    snapGrid,
+    transitionsBuilder,
+  );
+}
+
+class _ResolvedPagedSheetRouteThemeData extends PagedSheetRouteThemeData {
+  const _ResolvedPagedSheetRouteThemeData._({
+    required super.scrollConfiguration,
+    required super.dragConfiguration,
+    required super.initialOffset,
+    required super.snapGrid,
+    required super.transitionDuration,
+    required super.transitionsBuilder,
+  });
+
+  const _ResolvedPagedSheetRouteThemeData.fallback()
+    : super(
+        scrollConfiguration: SheetScrollConfiguration.disabled,
+        dragConfiguration: const SheetDragConfiguration(),
+        initialOffset: const SheetOffset(1),
+        snapGrid: const SheetSnapGrid.single(snap: SheetOffset(1)),
+        transitionDuration: const Duration(milliseconds: 300),
+        transitionsBuilder: null,
+      );
+
+  factory _ResolvedPagedSheetRouteThemeData.resolve(
+    PagedSheetRouteThemeData theme,
+    BuildContext context,
+  ) {
+    const fallbackTheme = _ResolvedPagedSheetRouteThemeData.fallback();
+    final inheritedTheme = PagedSheetRouteTheme.of(context);
+    return _ResolvedPagedSheetRouteThemeData._(
+      scrollConfiguration:
+          theme.scrollConfiguration ??
+          inheritedTheme?.scrollConfiguration ??
+          fallbackTheme.scrollConfiguration,
+      dragConfiguration:
+          theme.dragConfiguration ??
+          inheritedTheme?.dragConfiguration ??
+          fallbackTheme.dragConfiguration,
+      initialOffset:
+          theme.initialOffset ??
+          inheritedTheme?.initialOffset ??
+          fallbackTheme.initialOffset,
+      snapGrid:
+          theme.snapGrid ?? inheritedTheme?.snapGrid ?? fallbackTheme.snapGrid,
+      transitionDuration:
+          theme.transitionDuration ??
+          inheritedTheme?.transitionDuration ??
+          fallbackTheme.transitionDuration,
+      transitionsBuilder:
+          theme.transitionsBuilder ??
+          inheritedTheme?.transitionsBuilder ??
+          fallbackTheme.transitionsBuilder,
+    );
+  }
+
+  @override
+  SheetScrollConfiguration get scrollConfiguration =>
+      super.scrollConfiguration!;
+
+  @override
+  SheetDragConfiguration get dragConfiguration => super.dragConfiguration!;
+
+  @override
+  SheetOffset get initialOffset => super.initialOffset!;
+
+  @override
+  SheetSnapGrid get snapGrid => super.snapGrid!;
+
+  @override
+  Duration get transitionDuration => super.transitionDuration!;
+}
+
+/// An [InheritedWidget] that provides default route parameter values
+/// for [PagedSheetRoute]s and [PagedSheetPage]s in a [PagedSheet].
+///
+/// Place this widget above a [PagedSheet] to set shared defaults for all
+/// routes. Individual routes can still override any parameter.
+///
+/// ```dart
+/// PagedSheetRouteTheme(
+///   data: PagedSheetRouteThemeData(
+///     transitionsBuilder: myTransitionBuilder,
+///     snapGrid: mySnapGrid,
+///   ),
+///   child: PagedSheet(
+///     navigator: Navigator(...),
+///   ),
+/// )
+/// ```
+class PagedSheetRouteTheme extends InheritedWidget {
+  /// Creates a [PagedSheetRouteTheme].
+  const PagedSheetRouteTheme({
+    super.key,
+    required this.data,
+    required super.child,
+  });
+
+  /// The theme data for route defaults.
+  final PagedSheetRouteThemeData data;
+
+  /// Returns the [PagedSheetRouteThemeData] from the nearest
+  /// [PagedSheetRouteTheme] ancestor.
+  static PagedSheetRouteThemeData? of(BuildContext context) {
+    return context
+        .dependOnInheritedWidgetOfExactType<PagedSheetRouteTheme>()
+        ?.data;
+  }
+
+  @override
+  bool updateShouldNotify(PagedSheetRouteTheme oldWidget) {
+    return data != oldWidget.data;
+  }
+}
+
+mixin _PagedSheetEntry {
+  SheetSnapGrid get snapGrid;
+
+  SheetOffset get initialOffset;
+
+  SheetScrollConfiguration get scrollConfiguration;
+
+  SheetDragConfiguration get dragConfiguration;
+
+  SheetOffset? _lastSettledOffset;
+
+  Size? _contentSize;
+}
+
+class _PagedSheetModelConfig extends SheetModelConfig {
+  const _PagedSheetModelConfig({
+    required super.physics,
+    required super.gestureProxy,
+    super.snapGrid = _kDefaultSnapGrid,
+    required this.offsetInterpolationCurve,
+  });
+
+  final Curve offsetInterpolationCurve;
+
+  @override
+  _PagedSheetModelConfig copyWith({
+    SheetPhysics? physics,
+    SheetSnapGrid? snapGrid,
+    SheetGestureProxyMixin? gestureProxy,
+    Curve? offsetInterpolationCurve,
+  }) {
+    return _PagedSheetModelConfig(
+      physics: physics ?? this.physics,
+      snapGrid: snapGrid ?? this.snapGrid,
+      gestureProxy: gestureProxy ?? this.gestureProxy,
+      offsetInterpolationCurve:
+          offsetInterpolationCurve ?? this.offsetInterpolationCurve,
+    );
+  }
+}
+
+class _PagedSheetModel extends SheetModel<_PagedSheetModelConfig>
+    with ScrollAwareSheetModelMixin<_PagedSheetModelConfig> {
+  _PagedSheetModel(super.context, super.config) {
+    // This activity only initializes the offset to 0 to satisfy the SheetModel
+    // contract. It waits for didEndTransition callback to be called with the
+    // initial route entry, which eventually updates the offset to the correct
+    // value for that route.
+    beginActivity(_InitialActivity());
+  }
+
+  _PagedSheetEntry? _currentEntry;
+
+  @override
+  SheetScrollConfiguration get scrollConfiguration =>
+      _currentEntry?.scrollConfiguration ?? SheetScrollConfiguration.disabled;
+
+  @override
+  set config(_PagedSheetModelConfig value) {
+    if (_currentEntry case final entry? when entry.snapGrid != value.snapGrid) {
+      // Always respects the snap grid of the current entry if exists.
+      super.config = value.copyWith(snapGrid: entry.snapGrid);
+    } else {
+      super.config = value;
+    }
+  }
+
+  @override
+  void dispose() {
+    _currentEntry = null;
+    super.dispose();
+  }
+
+  @override
+  void beginActivity(SheetActivity activity) {
+    super.beginActivity(activity);
+    if (activity is IdleSheetActivity) {
+      // Saves the offset to which the current entry settles when idle,
+      // so that we can restore it when returning to this entry from another
+      // via, e.g., Navigator.pop().
+      _currentEntry?._lastSettledOffset = activity.targetOffset;
+    }
+  }
+
+  @override
+  void applyNewLayout(SheetLayout layout) {
+    // Workaround for https://github.com/fujidaiti/smooth_sheets/issues/315:
+    //
+    // When using auto_route and the sheet is fullscreen, the initialOffset is
+    // ignored on the first build. The root cause is that AutoRouter,
+    // which internally builds a Navigator, does not construct the Navigator
+    // during the first frame in which the sheet is built.
+    //
+    // In that first frame, the initialOffset is ignored because _currentEntry
+    // is not yet set. However, AutoRouter sizes itself to match the viewport,
+    // so the 'layout' argument's contentSize equals the viewportSize.
+    // In the following frame, AutoRouter builds the internal Navigator.
+    // If the first route in the Navigator is fullscreen, the 'layout' will
+    // have the exact same values as in the previous frame.
+    // As a result, super.applyNewLayout() returns immediately,
+    // and the initialOffset is not applied.
+    //
+    // This workaround applies a zero-sized layout to the sheet when it is first
+    // built and _currentEntry is still null (implying that the Navigator has
+    // not yet been built). This ensures that super.applyNewLayout updates the
+    // offset to respect the initialOffset once the Navigator is built in the
+    // next frame.
+    if (!hasMetrics && _currentEntry == null) {
+      super.applyNewLayout(
+        ImmutableSheetLayout(
+          contentBaseline: 0,
+          size: Size.zero,
+          contentSize: Size.zero,
+          contentMargin: EdgeInsets.zero,
+          viewportPadding: layout.viewportPadding,
+          viewportSize: layout.viewportSize,
+        ),
+      );
+    } else {
+      super.applyNewLayout(layout);
+    }
+  }
+
+  void didChangeInternalStateOfEntry(_PagedSheetEntry entry) {
+    if (_currentEntry == entry) {
+      config = config.copyWith(snapGrid: entry.snapGrid);
+    }
+  }
+
+  void didStartTransition(
+    _PagedSheetEntry targetEntry,
+    Animation<double> animation,
+    bool isUserGestureInProgress,
+  ) {
+    _currentEntry = null;
+
+    final Curve effectiveCurve;
+    final Animation<double> effectiveAnimation;
+    if (isUserGestureInProgress) {
+      effectiveCurve = Curves.linear;
+      effectiveAnimation = animation.drive(Tween(begin: 1.0, end: 0.0));
+    } else if (animation.status == AnimationStatus.reverse) {
+      effectiveCurve = config.offsetInterpolationCurve;
+      effectiveAnimation = animation.drive(Tween(begin: 1.0, end: 0.0));
+    } else {
+      effectiveCurve = config.offsetInterpolationCurve;
+      effectiveAnimation = animation;
+    }
+
+    beginActivity(
+      _TransitionActivity(
+        destinationEntry: targetEntry,
+        animation: effectiveAnimation,
+        animationCurve: effectiveCurve,
+      ),
+    );
+  }
+
+  void didEndTransition(_PagedSheetEntry entry) {
+    _currentEntry = entry;
+    didChangeInternalStateOfEntry(entry);
+    if (entry._contentSize != null) {
+      goIdle();
+    } else {
+      // The new route size is not yet available, so we cannot determine the
+      // final sheet offset here. This can occur when the initial route is
+      // pushed to the Navigator stack, or when the route changes without
+      // animation (e.g., via Navigator.replace()).
+      //
+      // In these cases, didEndTransition is called before the layout phase
+      // where the new route is first laid out.
+      // _PostTransitionWithoutAnimationActivity waits for the size to become
+      // available, then updates the offset to the correct value and goes idle.
+      beginActivity(_PostTransitionWithoutAnimationActivity(newEntry: entry));
+    }
+  }
+}
+
+class _InitialActivity extends SheetActivity<_PagedSheetModel> {
+  @override
+  bool get shouldIgnorePointer => true;
+
+  @override
+  double dryApplyNewLayout(ViewportLayout layout) =>
+      owner.hasMetrics ? owner.offset : 0;
+
+  @override
+  void applyNewLayout(ViewportLayout? oldLayout) {
+    if (!owner.hasMetrics) {
+      owner.offset = dryApplyNewLayout(owner);
+    }
+  }
+}
+
+class _TransitionActivity extends SheetActivity<_PagedSheetModel> {
+  _TransitionActivity({
+    required this.destinationEntry,
+    required this.animation,
+    required this.animationCurve,
+  });
+
+  final _PagedSheetEntry destinationEntry;
+  final Animation<double> animation;
+  final Curve animationCurve;
+  late final Animation<double> _effectiveAnimation;
+  late final double _startOffset;
+
+  @override
+  bool get shouldIgnorePointer => true;
+
+  @override
+  void init(_PagedSheetModel owner) {
+    super.init(owner);
+    assert(
+      owner.hasMetrics,
+      '$runtimeType can not be the initial activity of the model.',
+    );
+    _startOffset = owner.offset;
+    owner.config = owner.config.copyWith(snapGrid: _kDefaultSnapGrid);
+    _effectiveAnimation = animation.drive(CurveTween(curve: animationCurve))
+      ..addListener(_onAnimationTick);
+  }
+
+  @override
+  void dispose() {
+    _effectiveAnimation.removeListener(_onAnimationTick);
+    super.dispose();
+  }
+
+  void _onAnimationTick() {
+    final targetSize = destinationEntry._contentSize;
+    if (targetSize == null) {
+      // The new route is not yet laid out.
+      return;
+    }
+
+    final layoutAfterTransition = owner.copyWith(contentSize: targetSize);
+    final preferredEndOffset =
+        destinationEntry._lastSettledOffset ?? destinationEntry.initialOffset;
+    final endOffset = destinationEntry.snapGrid.getSnapOffset(
+      layoutAfterTransition,
+      preferredEndOffset.resolve(layoutAfterTransition),
+      0,
+    );
+
+    owner
+      ..offset = lerpDouble(
+        _startOffset,
+        endOffset.resolve(layoutAfterTransition),
+        _effectiveAnimation.value,
+      )!
+      ..didUpdateMetrics();
+  }
+}
+
+class _PostTransitionWithoutAnimationActivity
+    extends SheetActivity<_PagedSheetModel> {
+  _PostTransitionWithoutAnimationActivity({required this.newEntry});
+
+  final _PagedSheetEntry newEntry;
+
+  @override
+  bool get shouldIgnorePointer => true;
+
+  @override
+  void init(_PagedSheetModel owner) {
+    super.init(owner);
+    assert(newEntry._contentSize == null);
+  }
+
+  @override
+  double dryApplyNewLayout(ViewportLayout layout) =>
+      _effectiveInitialOffset(layout).resolve(layout);
+
+  @override
+  void applyNewLayout(ViewportLayout? oldLayout) {
+    final targetOffset = _effectiveInitialOffset(owner);
+    owner
+      ..offset = targetOffset.resolve(owner)
+      ..didUpdateMetrics()
+      ..goIdle(targetOffset: targetOffset);
+  }
+
+  SheetOffset _effectiveInitialOffset(ViewportLayout layout) {
+    assert(layout.contentSize == newEntry._contentSize);
+    assert(newEntry._lastSettledOffset == null);
+    return newEntry.snapGrid.getSnapOffset(
+      layout,
+      newEntry.initialOffset.resolve(layout),
+      velocity,
+    );
+  }
+}
+
+class PagedSheet extends StatelessWidget {
+  const PagedSheet({
+    super.key,
+    this.controller,
+    this.physics = kDefaultSheetPhysics,
+    this.transitionCurve = Curves.easeInOutCubic,
+    this.decoration = const DefaultSheetDecoration(),
+    this.padding = EdgeInsets.zero,
+    this.builder,
+    required this.navigator,
+  });
+
+  final SheetController? controller;
+
+  final SheetPhysics physics;
+
+  /// The [Curve] used for both the offset and size transition animations
+  /// when navigating to a new route within the [navigator].
+  final Curve transitionCurve;
+
+  final SheetDecoration decoration;
+
+  /// {@macro viewport.BareSheet.padding}
+  final EdgeInsets padding;
+
+  /// A builder callback for inserting extra widgets between this
+  /// [PagedSheet] and the [navigator].
+  ///
+  /// Think of this like the [WidgetsApp.builder] of [WidgetsApp]. A common use
+  /// case is to create shared top bar and/or bottom bar that is always shown along
+  /// with all routes in the [navigator].
+  ///
+  /// ```dart
+  /// PagedSheet(
+  ///   builder: (context, navigator) {
+  ///     return SheetContentScaffold(
+  ///       extendBodyBehindTopBar: true,
+  ///       extendBodyBehindBottomBar: true,
+  ///       topBar: AppBar(title: Text('Title')),
+  ///       bottomBar: BottomNavigationBar(items: [...]),
+  ///       body: navigator,
+  ///     );
+  ///   },
+  ///   navigator: Navigator(...),
+  /// )
+  /// ```
+  final Widget Function(BuildContext, Widget)? builder;
+
+  final Widget navigator;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget content = NavigatorResizable(
+      interpolationCurve: transitionCurve,
+      child: _NavigatorEventDispatcher(child: navigator),
+    );
+    if (builder case final builder?) {
+      content = builder(context, content);
+    }
+
+    return SheetModelOwner(
+      factory: _PagedSheetModel.new,
+      controller: controller ?? DefaultSheetController.maybeOf(context),
+      config: _PagedSheetModelConfig(
+        physics: physics,
+        gestureProxy: SheetGestureProxy.maybeOf(context),
+        offsetInterpolationCurve: transitionCurve,
+      ),
+      child: BareSheet(
+        decoration: decoration,
+        padding: padding,
+        child: _RouteAwareSheetDraggable(child: content),
+      ),
+    );
+  }
+}
+
+class _RouteAwareSheetDraggable extends StatefulWidget {
+  const _RouteAwareSheetDraggable({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_RouteAwareSheetDraggable> createState() =>
+      _RouteAwareSheetDraggableState();
+}
+
+class _RouteAwareSheetDraggableState extends State<_RouteAwareSheetDraggable>
+    implements SheetDragConfiguration {
+  late _PagedSheetModel _model;
+
+  SheetDragConfiguration get _effectiveConfig =>
+      _model._currentEntry?.dragConfiguration ??
+      SheetDragConfiguration.disabled;
+
+  @override
+  HitTestBehavior? get hitTestBehavior => _effectiveConfig.hitTestBehavior;
+
+  @override
+  Set<PointerDeviceKind>? get deviceKinds => _effectiveConfig.deviceKinds;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _model = SheetModelOwner.of(context)! as _PagedSheetModel;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SheetDraggable(configuration: this, child: widget.child);
+  }
+}
+
+class _NavigatorEventDispatcher extends StatefulWidget {
+  const _NavigatorEventDispatcher({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_NavigatorEventDispatcher> createState() =>
+      _NavigatorEventDispatcherState();
+}
+
+class _NavigatorEventDispatcherState extends State<_NavigatorEventDispatcher>
+    with NavigatorEventListener {
+  _PagedSheetModel? _model;
+  NavigatorEventObserverState? _navigatorEventObserver;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _model = SheetModelOwner.of(context)! as _PagedSheetModel;
+    final observer = NavigatorEventObserver.of(context)!;
+    if (observer != _navigatorEventObserver) {
+      _navigatorEventObserver?.removeListener(this);
+      _navigatorEventObserver = observer..addListener(this);
+    }
+  }
+
+  @override
+  void dispose() {
+    _navigatorEventObserver?.removeListener(this);
+    _navigatorEventObserver = null;
+    _model = null;
+    super.dispose();
+  }
+
+  @override
+  void didStartTransition(
+    Route<dynamic> targetRoute,
+    Animation<double> animation, {
+    bool isUserGestureInProgress = false,
+  }) {
+    if (targetRoute case final _PagedSheetEntry entry) {
+      _model!.didStartTransition(entry, animation, isUserGestureInProgress);
+    }
+  }
+
+  @override
+  void didEndTransition(Route<dynamic> route) {
+    if (route case final _PagedSheetEntry entry) {
+      _model!.didEndTransition(entry);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return widget.child;
+  }
+}
+
+class _RouteContentLayoutObserver extends SingleChildRenderObjectWidget {
+  const _RouteContentLayoutObserver({
+    required this.onContentSizeChanged,
+    required super.child,
+  });
+
+  final ValueChanged<Size> onContentSizeChanged;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) {
+    return _RenderRouteContentLayoutObserver(onContentSizeChanged);
+  }
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderRouteContentLayoutObserver renderObject,
+  ) {
+    renderObject.onContentSizeChanged = onContentSizeChanged;
+  }
+}
+
+class _RenderRouteContentLayoutObserver extends RenderProxyBox {
+  _RenderRouteContentLayoutObserver(this.onContentSizeChanged);
+
+  ValueChanged<Size> onContentSizeChanged;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    if (child?.size case final childSize?) {
+      onContentSizeChanged(childSize);
+    }
+  }
+}
+
+@optionalTypeArgs
+abstract class _BasePagedSheetRoute<T> extends PageRoute<T>
+    with ObservableRouteMixin<T>, _PagedSheetEntry {
+  _BasePagedSheetRoute({super.settings});
+
+  _PagedSheetModel? _model;
+  late _ResolvedPagedSheetRouteThemeData _resolvedTheme;
+
+  PagedSheetRouteThemeData get _theme;
+
+  @override
+  SheetOffset get initialOffset => _resolvedTheme.initialOffset;
+
+  @override
+  SheetSnapGrid get snapGrid => _resolvedTheme.snapGrid;
+
+  @override
+  SheetScrollConfiguration get scrollConfiguration =>
+      _resolvedTheme.scrollConfiguration;
+
+  @override
+  SheetDragConfiguration get dragConfiguration =>
+      _resolvedTheme.dragConfiguration;
+
+  @override
+  Duration get transitionDuration => _resolvedTheme.transitionDuration;
+
+  @override
+  Color? get barrierColor => null;
+
+  @override
+  String? get barrierLabel => null;
+
+  @override
+  void install() {
+    _model = SheetModelOwner.of(navigator!.context)! as _PagedSheetModel;
+    // Resolves the effective theme before calling super.install() to ensure
+    // that super.createAnimation() uses transitionDuration from the resolved
+    // theme.
+    _resolvedTheme = _ResolvedPagedSheetRouteThemeData.resolve(
+      _theme,
+      navigator!.context,
+    );
+    super.install();
+  }
+
+  @override
+  void dispose() {
+    _model = null;
+    super.dispose();
+  }
+
+  @override
+  void changedExternalState() {
+    super.changedExternalState();
+    _model = SheetModelOwner.of(navigator!.context)! as _PagedSheetModel;
+    _resolvedTheme = _ResolvedPagedSheetRouteThemeData.resolve(
+      _theme,
+      navigator!.context,
+    );
+    controller!
+      ..duration = transitionDuration
+      ..reverseDuration = reverseTransitionDuration;
+  }
+
+  @override
+  void changedInternalState() {
+    super.changedInternalState();
+    _model!.didChangeInternalStateOfEntry(this);
+  }
+
+  @override
+  bool canTransitionFrom(TransitionRoute<dynamic> previousRoute) {
+    return previousRoute is _BasePagedSheetRoute;
+  }
+
+  @override
+  bool canTransitionTo(TransitionRoute<dynamic> nextRoute) {
+    return nextRoute is _BasePagedSheetRoute;
+  }
+
+  Widget buildContent(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  );
+
+  @override
+  @nonVirtual
+  Widget buildPage(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  ) {
+    return ResizableNavigatorRouteContentBoundary(
+      child: _RouteContentLayoutObserver(
+        onContentSizeChanged: (size) => _contentSize = size,
+        child: DraggableScrollableSheetContent(
+          scrollConfiguration: scrollConfiguration,
+          // _CurrentRouteAwareSheetDraggable already handles drag gestures
+          // within the route content, so we eliminate per-route SheetDraggable.
+          dragConfiguration: SheetDragConfiguration.disabled,
+          child: buildContent(context, animation, secondaryAnimation),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget buildTransitions(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    if (_resolvedTheme.transitionsBuilder case final builder?) {
+      return builder(context, animation, secondaryAnimation, child);
+    }
+    final theme = Theme.of(context);
+    return switch (theme.platform) {
+      TargetPlatform.android =>
+        _FadeForwardPageTransitionWithAnimationLessBackGesture(
+          route: this,
+          animation: animation,
+          secondaryAnimation: secondaryAnimation,
+          child: child,
+        ),
+      _ => theme.pageTransitionsTheme.buildTransitions(
+        this,
+        context,
+        animation,
+        secondaryAnimation,
+        child,
+      ),
+    };
+  }
+}
+
+/// A [Route] for [PagedSheet].
+class PagedSheetRoute<T> extends _BasePagedSheetRoute<T> {
+  /// Creates a [PagedSheetRoute].
+  ///
+  /// See [PagedSheetRouteThemeData] for [PagedSheet] related parameters
+  /// such as [scrollConfiguration], and [dragConfiguration].
+  PagedSheetRoute({
+    super.settings,
+    this.maintainState = true,
+    SheetScrollConfiguration? scrollConfiguration,
+    SheetDragConfiguration? dragConfiguration,
+    Duration? transitionDuration,
+    SheetOffset? initialOffset,
+    SheetSnapGrid? snapGrid,
+    RouteTransitionsBuilder? transitionsBuilder,
+    required this.builder,
+  }) : _theme = PagedSheetRouteThemeData(
+         scrollConfiguration: scrollConfiguration,
+         dragConfiguration: dragConfiguration,
+         transitionDuration: transitionDuration,
+         initialOffset: initialOffset,
+         snapGrid: snapGrid,
+         transitionsBuilder: transitionsBuilder,
+       );
+
+  @override
+  final PagedSheetRouteThemeData _theme;
+
+  @override
+  final bool maintainState;
+
+  final WidgetBuilder builder;
+
+  @override
+  Widget buildContent(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  ) {
+    return builder(context);
+  }
+}
+
+/// A [Page] for [PagedSheet].
+class PagedSheetPage<T> extends Page<T> {
+  /// Creates a [PagedSheetPage].
+  ///
+  /// See [PagedSheetRouteThemeData] for [PagedSheet] related parameters
+  /// such as [scrollConfiguration], and [dragConfiguration].
+  PagedSheetPage({
+    super.key,
+    super.name,
+    super.arguments,
+    super.restorationId,
+    this.maintainState = true,
+    SheetScrollConfiguration? scrollConfiguration,
+    SheetDragConfiguration? dragConfiguration,
+    SheetOffset? initialOffset,
+    SheetSnapGrid? snapGrid,
+    Duration? transitionDuration,
+    RouteTransitionsBuilder? transitionsBuilder,
+    required this.child,
+  }) : _theme = PagedSheetRouteThemeData(
+         scrollConfiguration: scrollConfiguration,
+         dragConfiguration: dragConfiguration,
+         transitionDuration: transitionDuration,
+         initialOffset: initialOffset,
+         snapGrid: snapGrid,
+         transitionsBuilder: transitionsBuilder,
+       );
+
+  final PagedSheetRouteThemeData _theme;
+
+  final bool maintainState;
+
+  /// The content to be shown in the [Route] created by this page.
+  final Widget child;
+
+  @override
+  Route<T> createRoute(BuildContext context) {
+    return _PageBasedPagedSheetRoute(page: this);
+  }
+}
+
+class _PageBasedPagedSheetRoute<T> extends _BasePagedSheetRoute<T> {
+  _PageBasedPagedSheetRoute({required PagedSheetPage<T> page})
+    : super(settings: page);
+
+  PagedSheetPage<T> get page => settings as PagedSheetPage<T>;
+
+  @override
+  bool get maintainState => page.maintainState;
+
+  @override
+  PagedSheetRouteThemeData get _theme => page._theme;
+
+  @override
+  Widget buildContent(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  ) {
+    return page.child;
+  }
+}
+
+/// A transition that enables Android's predictive back gesture to pop routes
+/// within the nested [Navigator], without modifying route transition progress
+/// during the gesture.
+///
+/// This is a workaround for the issue where [TransitionRoute.animation]
+/// jumps from a mid-transition value to 1.0 when the back gesture is committed,
+/// causing an abrupt pop-transition animation.
+///
+/// The root cause is that [TransitionRoute.handleUpdateBackGestureProgress]
+/// updates the [TransitionRoute.controller]'s value as the gesture progresses,
+/// but [TransitionRoute.handleCommitBackGesture] triggers the transition
+/// animation via [AnimationController.reverse] with 1.0 as the starting point,
+/// regardless of the current [TransitionRoute.controller]'s value.
+///
+/// The default back gesture handler behaves this way, but is incompatible with
+/// [PagedSheet]'s size transition. This transition widget therefore suppresses
+/// that gesture-driven transition progress while still allowing the gesture to
+/// commit a route pop.
+class _FadeForwardPageTransitionWithAnimationLessBackGesture
+    extends StatefulWidget {
+  const _FadeForwardPageTransitionWithAnimationLessBackGesture({
+    required this.route,
+    required this.animation,
+    required this.secondaryAnimation,
+    required this.child,
+  });
+
+  final PageRoute<dynamic> route;
+  final Animation<double> animation;
+  final Animation<double> secondaryAnimation;
+  final Widget child;
+
+  @override
+  State<_FadeForwardPageTransitionWithAnimationLessBackGesture> createState() =>
+      _FadeForwardPageTransitionWithAnimationLessBackGestureState();
+}
+
+class _FadeForwardPageTransitionWithAnimationLessBackGestureState
+    extends State<_FadeForwardPageTransitionWithAnimationLessBackGesture>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  bool handleStartBackGesture(PredictiveBackEvent backEvent) {
+    return !backEvent.isButtonEvent &&
+        widget.route.isCurrent &&
+        !widget.route.isFirst;
+  }
+
+  @override
+  void handleCancelBackGesture() {
+    _handleEndBackGesture(isCommitted: false);
+  }
+
+  @override
+  void handleCommitBackGesture() {
+    _handleEndBackGesture(isCommitted: true);
+  }
+
+  void _handleEndBackGesture({required bool isCommitted}) {
+    if (isCommitted && widget.route.isCurrent) {
+      widget.route.navigator?.pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return const FadeForwardsPageTransitionsBuilder().buildTransitions(
+      widget.route,
+      context,
+      widget.animation,
+      widget.secondaryAnimation,
+      widget.child,
+    );
+  }
+}

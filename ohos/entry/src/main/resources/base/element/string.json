@@ -1,0 +1,28 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "FlClash HarmonyOS entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "FlClash"
+    },
+    {
+      "name": "permission_read_document_reason",
+      "value": "Import configuration files selected by the user."
+    },
+    {
+      "name": "internet_permission_reason",
+      "value": "Allow FlClash to download subscriptions and test network connections."
+    },
+    {
+      "name": "file_access_persist_permission_reason",
+      "value": "Allow FlClash to keep access to user-selected configuration files."
+    }
+  ]
+}

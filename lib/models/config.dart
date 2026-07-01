@@ -128,6 +128,47 @@ extension AccessControlPropsExt on AccessControlProps {
   };
 }
 
+VpnProps normalizeVpnPropsForPlatform({
+  required bool isOhos,
+  required VpnProps vpnProps,
+}) {
+  if (!isOhos) {
+    return vpnProps;
+  }
+  return vpnProps.copyWith(
+    systemProxy: true,
+    allowBypass: true,
+    accessControlProps: defaultAccessControlProps,
+  );
+}
+
+VpnProps normalizeOhosVpnProps(VpnProps vpnProps) {
+  return normalizeVpnPropsForPlatform(
+    isOhos: system.isOhos,
+    vpnProps: vpnProps,
+  );
+}
+
+NetworkProps normalizeNetworkPropsForPlatform({
+  required bool isOhos,
+  required NetworkProps networkProps,
+}) {
+  if (!isOhos) {
+    return networkProps;
+  }
+  return networkProps.copyWith(
+    systemProxy: true,
+    bypassDomain: defaultBypassDomain,
+  );
+}
+
+NetworkProps normalizeOhosNetworkProps(NetworkProps networkProps) {
+  return normalizeNetworkPropsForPlatform(
+    isOhos: system.isOhos,
+    networkProps: networkProps,
+  );
+}
+
 @freezed
 abstract class WindowProps with _$WindowProps {
   const factory WindowProps({
@@ -253,6 +294,19 @@ abstract class Config with _$Config {
     if (json == null) {
       return const Config(themeProps: defaultThemeProps);
     }
-    return _$ConfigFromJson(json);
+    final config = _$ConfigFromJson(json);
+    if (!system.isOhos) {
+      return config;
+    }
+    return config.copyWith(
+      vpnProps: normalizeVpnPropsForPlatform(
+        isOhos: true,
+        vpnProps: config.vpnProps,
+      ),
+      networkProps: normalizeNetworkPropsForPlatform(
+        isOhos: true,
+        networkProps: config.networkProps,
+      ),
+    );
   }
 }

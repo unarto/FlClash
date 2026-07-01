@@ -7,16 +7,21 @@ import 'package:fl_clash/core/core.dart';
 import 'package:fl_clash/core/interface.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/plugins/app.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:path/path.dart';
 
 class CoreController {
   static CoreController? _instance;
+  static const _ohosDetachedSyncTimeout = Duration(seconds: 90);
+  static const _ohosDetachedSyncPollInterval = Duration(seconds: 1);
   late CoreHandlerInterface _interface;
 
   CoreController._internal() {
-    if (system.isAndroid) {
+    if (system.isOhos) {
+      _interface = coreService!;
+    } else if (system.isAndroid) {
       _interface = coreLib!;
     } else {
       _interface = coreService!;
@@ -38,7 +43,8 @@ class CoreController {
 
   bool get isCompleted => _interface.completer.isCompleted;
 
-  Future<String> preload() {
+  Future<String> preload() async {
+    await initOhosCoreBinary();
     return _interface.preload();
   }
 
@@ -70,7 +76,23 @@ class CoreController {
     }
   }
 
+  static Future<void> initOhosCoreBinary() async {
+    if (!system.isOhos) {
+      return;
+    }
+    await appPath.initOhosPaths();
+    await Directory(await appPath.homeDirPath).create(recursive: true);
+    await Directory(await appPath.tempPath).create(recursive: true);
+    final bundledCorePath = await appPath.ohosBundledCorePath;
+    final bundledCoreFile = File(bundledCorePath);
+    final data = await rootBundle.load('assets/data/FlClashCore');
+    final bytes = data.buffer.asUint8List();
+    await bundledCoreFile.writeAsBytes(bytes, flush: true);
+    await app?.markExecutable(bundledCorePath);
+  }
+
   Future<bool> init(int version) async {
+    await initOhosCoreBinary();
     await initGeo();
     final homeDirPath = await appPath.homeDirPath;
     return _interface.init(InitParams(homeDir: homeDirPath, version: version));
@@ -87,8 +109,16 @@ class CoreController {
     return res;
   }
 
+  Future<String> convertSubscription(String data) async {
+    return _interface.convertSubscription(data);
+  }
+
+  Future<String> decodeQrImage(String path) async {
+    return _interface.decodeQrImage(path);
+  }
+
   Future<String> validateConfigWithData(String data) async {
-    final path = await appPath.tempFilePath;
+    final path = await appPath.coreSafeTempFilePath;
     final file = File(path);
     await file.safeWriteAsString(data);
     final res = await _interface.validateConfig(path);
@@ -119,7 +149,7 @@ class CoreController {
     required String defaultTestUrl,
   }) async {
     final proxiesData = await _interface.getProxies();
-    return toGroupsTask(
+    final groups = await toGroupsTask(
       ComputeGroupsState(
         proxiesData: proxiesData,
         sortType: sortType,
@@ -128,6 +158,7 @@ class CoreController {
         defaultTestUrl: defaultTestUrl,
       ),
     );
+    return groups;
   }
 
   FutureOr<String> changeProxy(ChangeProxyParams changeProxyParams) async {
@@ -138,7 +169,21 @@ class CoreController {
     final res = await _interface.getConnections();
     final connectionsData = json.decode(res) as Map;
     final connectionsRaw = connectionsData['connections'] as List? ?? [];
-    return connectionsRaw.map((e) => TrackerInfo.fromJson(e)).toList();
+    try {
+      final result = connectionsRaw
+          .map((e) => TrackerInfo.fromJson(Map<String, Object?>.from(e)))
+          .toList();
+      commonPrint.log(
+        '[OHOS-CORE] getConnections parsed count=${result.length}',
+      );
+      return result;
+    } catch (e) {
+      commonPrint.log(
+        '[OHOS-CORE] getConnections parse failed error=$e payload=$connectionsRaw',
+        logLevel: LogLevel.error,
+      );
+      rethrow;
+    }
   }
 
   Future<void> closeConnection(String id) async {
@@ -174,11 +219,51 @@ class CoreController {
     if (externalProvidersRawString.isEmpty) {
       return null;
     }
-    return ExternalProvider.fromJson(json.decode(externalProvidersRawString));
+    final provider = ExternalProvider.fromJson(
+      json.decode(externalProvidersRawString),
+    );
+    return provider;
   }
 
   Future<String> updateGeoData(UpdateGeoDataParams params) {
     return _interface.updateGeoData(params);
+  }
+
+  Future<void> waitForGeoDataUpdate(
+    UpdateGeoDataParams params, {
+    required DateTime beforeLastModified,
+  }) async {
+    if (!system.isOhos) {
+      return;
+    }
+    final deadline = DateTime.now().add(_ohosDetachedSyncTimeout);
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        final homePath = await appPath.homeDirPath;
+        final geoFile = File(join(homePath, params.geoName));
+        if (await geoFile.exists()) {
+          final lastModified = await geoFile.lastModified();
+          if (lastModified.isAfter(beforeLastModified)) {
+            commonPrint.log(
+              '[OHOS-CORE] geo data updated file=${params.geoName} '
+              'before=$beforeLastModified after=$lastModified',
+            );
+            return;
+          }
+        }
+      } catch (e) {
+        commonPrint.log(
+          '[OHOS-CORE] waitForGeoDataUpdate poll failed file=${params.geoName} '
+          'error=$e',
+        );
+      }
+      await Future<void>.delayed(_ohosDetachedSyncPollInterval);
+    }
+    commonPrint.log(
+      '[OHOS-CORE] waitForGeoDataUpdate timeout file=${params.geoName} '
+      'before=$beforeLastModified',
+      logLevel: LogLevel.warning,
+    );
   }
 
   Future<String> sideLoadExternalProvider({
@@ -193,6 +278,34 @@ class CoreController {
 
   Future<String> updateExternalProvider({required String providerName}) async {
     return _interface.updateExternalProvider(providerName);
+  }
+
+  Future<ExternalProvider?> waitForExternalProviderUpdate(
+    ExternalProvider provider,
+  ) async {
+    if (!system.isOhos) {
+      return getExternalProvider(provider.name);
+    }
+    final deadline = DateTime.now().add(_ohosDetachedSyncTimeout);
+    ExternalProvider? currentProvider = provider;
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(_ohosDetachedSyncPollInterval);
+      currentProvider = await getExternalProvider(provider.name);
+      if (currentProvider != null &&
+          currentProvider.updateAt.isAfter(provider.updateAt)) {
+        commonPrint.log(
+          '[OHOS-CORE] external provider updated provider=${provider.name} '
+          'before=${provider.updateAt} after=${currentProvider.updateAt}',
+        );
+        return currentProvider;
+      }
+    }
+    commonPrint.log(
+      '[OHOS-CORE] waitForExternalProviderUpdate timeout '
+      'provider=${provider.name} before=${provider.updateAt}',
+      logLevel: LogLevel.warning,
+    );
+    return currentProvider;
   }
 
   Future<bool> startListener() async {

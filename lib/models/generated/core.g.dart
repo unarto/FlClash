@@ -264,6 +264,8 @@ const _$ActionMethodEnumMap = {
   ActionMethod.forceGc: 'forceGc',
   ActionMethod.shutdown: 'shutdown',
   ActionMethod.validateConfig: 'validateConfig',
+  ActionMethod.convertSubscription: 'convertSubscription',
+  ActionMethod.decodeQrImage: 'decodeQrImage',
   ActionMethod.updateConfig: 'updateConfig',
   ActionMethod.getConfig: 'getConfig',
   ActionMethod.getProxies: 'getProxies',
@@ -312,9 +314,9 @@ _ActionResult _$ActionResultFromJson(Map<String, dynamic> json) =>
       method: $enumDecode(_$ActionMethodEnumMap, json['method']),
       data: json['data'],
       id: json['id'] as String?,
-      code:
-          $enumDecodeNullable(_$ResultTypeEnumMap, json['code']) ??
-          ResultType.success,
+      code: json['code'] == null
+          ? ResultType.success
+          : resultTypeFromJson(json['code']),
     );
 
 Map<String, dynamic> _$ActionResultToJson(_ActionResult instance) =>
@@ -322,7 +324,7 @@ Map<String, dynamic> _$ActionResultToJson(_ActionResult instance) =>
       'method': _$ActionMethodEnumMap[instance.method]!,
       'data': instance.data,
       'id': instance.id,
-      'code': _$ResultTypeEnumMap[instance.code]!,
+      'code': resultTypeToJson(instance.code),
     };
 
 const _$ResultTypeEnumMap = {ResultType.success: 0, ResultType.error: -1};

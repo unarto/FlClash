@@ -29,6 +29,7 @@ class BaseScrollBehavior extends MaterialScrollBehavior {
         switch (getPlatform(context)) {
           case TargetPlatform.linux:
           case TargetPlatform.macOS:
+          case TargetPlatform.ohos:
           case TargetPlatform.windows:
             assert(details.controller != null);
             return CommonScrollBar(

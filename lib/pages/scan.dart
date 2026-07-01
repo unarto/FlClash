@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
-import 'package:fl_clash/common/color.dart';
-import 'package:fl_clash/providers/action.dart';
+import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/widgets/activate_box.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +21,26 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
   );
 
   StreamSubscription<Object?>? _subscription;
+  bool _didAutoPickFromGallery = false;
+
+  Future<void> _stopScanner() async {
+    await _subscription?.cancel();
+    _subscription = null;
+    await controller.stop();
+  }
+
+  Future<void> _handlePickFromGallery() async {
+    await _stopScanner();
+    final url = await globalState.safeRun(picker.pickerConfigQRCode);
+    if (!mounted || url == null) {
+      if (mounted) {
+        _subscription = controller.barcodes.listen(_handleBarcode);
+        unawaited(controller.start());
+      }
+      return;
+    }
+    Navigator.pop<String>(context, url);
+  }
 
   @override
   void initState() {
@@ -29,6 +48,15 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _subscription = controller.barcodes.listen(_handleBarcode);
     unawaited(controller.start());
+    if (system.isOhos && globalState.isPre) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _didAutoPickFromGallery) {
+          return;
+        }
+        _didAutoPickFromGallery = true;
+        unawaited(_handlePickFromGallery());
+      });
+    }
   }
 
   void _handleBarcode(BarcodeCapture barcodeCapture) {
@@ -140,9 +168,7 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
               ),
               padding: const EdgeInsets.all(16),
               iconSize: 32.0,
-              onPressed: globalState.container
-                  .read(profilesActionProvider.notifier)
-                  .addProfileFormQrCode,
+              onPressed: _handlePickFromGallery,
               icon: const Icon(Icons.photo_camera_back),
             ),
           ),
@@ -154,7 +180,7 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
   @override
   Future<void> dispose() async {
     WidgetsBinding.instance.removeObserver(this);
-    unawaited(_subscription?.cancel());
+    await _subscription?.cancel();
     _subscription = null;
     await controller.dispose();
     super.dispose();

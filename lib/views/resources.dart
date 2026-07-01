@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/core.dart';
 import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/providers/action.dart';
 import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/widgets/widgets.dart';
@@ -84,6 +85,10 @@ class _GeoDataListItemState extends State<GeoDataListItem> {
           map[geoItem.key] = newUrl;
           return state.copyWith(geoXUrl: GeoXUrl.fromJson(map));
         });
+        await preferences.saveConfig(ref.read(configProvider));
+        await ref.read(setupActionProvider.notifier).applyProfile(
+          silence: true,
+        );
       } catch (e) {
         globalState.showMessage(
           title: geoItem.label,
@@ -196,10 +201,15 @@ class _GeoDataListItemState extends State<GeoDataListItem> {
   Future<void> updateGeoDateItem() async {
     isUpdating.value = true;
     try {
+      final beforeFileInfo = await _getGeoFileLastModified(geoItem.fileName);
       final message = await coreController.updateGeoData(
         UpdateGeoDataParams(geoName: geoItem.fileName, geoType: geoItem.label),
       );
       if (message.isNotEmpty) throw message;
+      await coreController.waitForGeoDataUpdate(
+        UpdateGeoDataParams(geoName: geoItem.fileName, geoType: geoItem.label),
+        beforeLastModified: beforeFileInfo.lastModified,
+      );
     } catch (e) {
       isUpdating.value = false;
       rethrow;
@@ -287,8 +297,8 @@ class _UpdateGeoUrlFormDialogState extends State<UpdateGeoUrlFormDialog> {
           child: Text(appLocalizations.submit),
         ),
       ],
-      child: Wrap(
-        runSpacing: 16,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
           TextField(
             maxLines: 5,

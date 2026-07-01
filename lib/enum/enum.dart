@@ -24,7 +24,7 @@ enum SupportPlatform {
       return SupportPlatform.MacOS;
     } else if (Platform.isLinux) {
       return SupportPlatform.Linux;
-    } else if (system.isAndroid) {
+    } else if (system.isAndroid || system.isOhos) {
       return SupportPlatform.Android;
     }
     throw 'invalid platform';
@@ -226,6 +226,8 @@ enum ActionMethod {
   forceGc,
   shutdown,
   validateConfig,
+  convertSubscription,
+  decodeQrImage,
   updateConfig,
   getConfig,
   getProxies,

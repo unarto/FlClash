@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/views/about.dart';
@@ -13,6 +14,7 @@ import 'package:fl_clash/views/config/config.dart';
 import 'package:fl_clash/views/hotkey.dart';
 import 'package:fl_clash/widgets/widgets.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' show dirname, join;
@@ -29,6 +31,80 @@ class ToolsView extends ConsumerStatefulWidget {
 }
 
 class _ToolViewState extends ConsumerState<ToolsView> {
+  static const _ohosWebDavTestUri = 'http://127.0.0.1:19000/';
+  static const _ohosWebDavTestUser = 'flclash';
+  static const _ohosWebDavTestPassword = 'flclash-pass';
+
+  Future<void> _importQrTestImage(BuildContext context) async {
+    if (!system.isOhos) {
+      return;
+    }
+    try {
+      final bytes = await rootBundle.load('assets/images/jisu_qr_test.png');
+      final path = '${await appPath.tempPath}/jisu_qr_test.png';
+      await File(path).safeWriteAsBytes(bytes.buffer.asUint8List());
+      final prepared = await app?.prepareGalleryTestImage(
+        path,
+        title: 'flclash_qr_test',
+      );
+      final imported = prepared == null
+          ? null
+          : await app?.importImageToGallery(
+              prepared,
+              title: 'flclash_qr_test',
+            );
+      if (context.mounted) {
+        context.showNotifier(imported == null ? '导入图库失败' : '已导入图库');
+      }
+    } catch (_) {
+      if (context.mounted) {
+        context.showNotifier('导入图库失败');
+      }
+    }
+  }
+
+  Future<void> _exportQrTestImage(BuildContext context) async {
+    if (!system.isOhos) {
+      return;
+    }
+    try {
+      final bytes = await rootBundle.load('assets/images/jisu_qr_test.png');
+      const fileName = 'jisu_qr_test_10694.png';
+      final path = '${await appPath.tempPath}/$fileName';
+      await File(path).safeWriteAsBytes(bytes.buffer.asUint8List());
+      final saved = await app?.writeFileToSharedDownload(
+        path,
+        fileName: fileName,
+      );
+      if (context.mounted) {
+        context.showNotifier(saved == null ? '导出测试二维码失败' : '已导出测试二维码');
+      }
+    } catch (_) {
+      if (context.mounted) {
+        context.showNotifier('导出测试二维码失败');
+      }
+    }
+  }
+
+  Future<void> _applyWebDavTestConfig(BuildContext context) async {
+    if (!system.isOhos || !globalState.isPre) {
+      return;
+    }
+    const DAVProps davProps = DAVProps(
+      uri: _ohosWebDavTestUri,
+      user: _ohosWebDavTestUser,
+      password: _ohosWebDavTestPassword,
+    );
+    ref.read(davSettingProvider.notifier).value = davProps;
+    commonPrint.log(
+      '[ohos-webdav] apply test config uri=${davProps.uri} user=${davProps.user} file=${davProps.fileName}',
+    );
+    if (!mounted) {
+      return;
+    }
+    context.showNotifier('已写入 WebDAV 测试配置');
+  }
+
   Widget _buildNavigationMenuItem(NavigationItem navigationItem) {
     return ListItem.open(
       leading: navigationItem.icon,
@@ -57,6 +133,33 @@ class _ToolViewState extends ConsumerState<ToolsView> {
     return generateSection(
       title: context.appLocalizations.other,
       items: [
+        if (system.isOhos)
+          ListItem(
+            leading: const Icon(Icons.photo_library_outlined),
+            title: const Text('导入二维码测试图到图库'),
+            subtitle: const Text('将测试二维码写入图库，供相册导入验证'),
+            onTap: () {
+              _importQrTestImage(context);
+            },
+          ),
+        if (system.isOhos)
+          ListItem(
+            leading: const Icon(Icons.file_upload_outlined),
+            title: const Text('导出二维码测试图到文件'),
+            subtitle: const Text('将测试二维码保存到系统共享文件，供文件选择器验证'),
+            onTap: () {
+              _exportQrTestImage(context);
+            },
+          ),
+        if (system.isOhos && globalState.isPre)
+          ListItem(
+            leading: const Icon(Icons.cloud_sync_outlined),
+            title: const Text('写入 WebDAV 测试配置'),
+            subtitle: const Text('写入 127.0.0.1 临时 WebDAV，用于模拟器远程备份验证'),
+            onTap: () {
+              _applyWebDavTestConfig(context);
+            },
+          ),
         const _DisclaimerItem(),
         if (enableDeveloperMode) const _DeveloperItem(),
         const _InfoItem(),
@@ -293,6 +396,7 @@ class _InfoItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListItem.open(
+      key: const ValueKey('tools-about-item'),
       leading: const Icon(Icons.info),
       title: Text(context.appLocalizations.about),
       delegate: const OpenDelegate(widget: AboutView()),
@@ -306,6 +410,7 @@ class _DeveloperItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListItem.open(
+      key: const ValueKey('tools-developer-item'),
       leading: const Icon(Icons.developer_board),
       title: Text(context.appLocalizations.developerMode),
       delegate: const OpenDelegate(widget: DeveloperView()),

@@ -1,0 +1,32 @@
+#!/bin/bash
+
+set -e
+
+HVIGOR_APP_HOME=$(cd "$(dirname "$0")" && pwd)
+HVIGOR_WRAPPER_SCRIPT="${HVIGOR_APP_HOME}/hvigor/hvigor-wrapper.js"
+
+fail() {
+  echo "ERROR: $1" >&2
+  exit 1
+}
+
+if [ -n "${NODE_HOME}" ]; then
+  if [ -x "${NODE_HOME}/bin/node" ]; then
+    EXECUTABLE_NODE="${NODE_HOME}/bin/node"
+  elif [ -x "${NODE_HOME}/node" ]; then
+    EXECUTABLE_NODE="${NODE_HOME}/node"
+  else
+    fail "NODE_HOME is set to an invalid directory: ${NODE_HOME}"
+  fi
+else
+  EXECUTABLE_NODE=$(command -v node || true)
+  if [ -z "${EXECUTABLE_NODE}" ]; then
+    fail "NODE_HOME is not set and no 'node' command could be found in PATH"
+  fi
+fi
+
+if [ ! -r "${HVIGOR_WRAPPER_SCRIPT}" ]; then
+  fail "Couldn't find hvigor/hvigor-wrapper.js in ${HVIGOR_APP_HOME}"
+fi
+
+exec "${EXECUTABLE_NODE}" "${HVIGOR_WRAPPER_SCRIPT}" "$@"

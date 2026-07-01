@@ -5,7 +5,8 @@ This file provides guidance for AI coding agents working with code in this repos
 ## Project Overview
 
 FlClash is a multi-platform proxy client based on ClashMeta (mihomo), built with Flutter. Supports Android, Windows,
-macOS, and Linux. Material You design with Surfboard-like UI.
+macOS, and Linux, with HarmonyOS NEXT (`ohos`) support in progress on the `feat/ohos-support` branch. Material You
+design with Surfboard-like UI.
 
 ## Common Development Commands
 
@@ -20,6 +21,7 @@ dart setup.dart macos
 dart setup.dart linux
 dart setup.dart windows
 dart setup.dart android
+dart setup.dart ohos       # HarmonyOS NEXT; needs OHOS_SDK_HOME (see HarmonyOS section below)
 
 # Build only the Go core (skip Flutter packaging)
 bash plugins/setup/buildkit/run_build_tool.sh macos
@@ -97,7 +99,7 @@ fails for nested freezed types.
 
 ### Core Integration (Go ClashMeta <-> Flutter)
 
-This is the most important architectural concept. The Go proxy core (`core/`) operates in two modes:
+This is the most important architectural concept. The Go proxy core (`core/`) operates in three modes:
 
 - **Android (lib mode):** Go core compiled as C shared library (`libclash.so`) via `go build -buildmode=c-shared` with
   CGO. Flutter calls it via FFI through the `service` plugin. Dart-side: `lib/core/lib.dart` (`CoreLib` class).
@@ -106,8 +108,13 @@ This is the most important architectural concept. The Go proxy core (`core/`) op
   JSON-over-socket (Unix socket on macOS/Linux, TCP on Windows). Dart-side: `lib/core/service.dart` (`CoreService`
   class).
 
-`lib/core/controller.dart` (`CoreController`) selects the implementation based on platform. `lib/core/interface.dart`
-defines the shared `CoreHandlerInterface`.
+- **HarmonyOS (core mode over NAPI):** `CoreController` selects `CoreService` (the socket impl), but the core is
+  started as a detached child process by the ArkTS/NAPI C++ bridge (`ohos/entry/src/main/cpp/bridge.cpp`), which
+  `dlopen`s `libclash.so` (built with `//go:build ohos && cgo`) and calls `startServerProcessDetached`. `CoreService`
+  then connects over a Unix socket under `/data/storage/el2/base/temp/`. See the HarmonyOS section below.
+
+`lib/core/controller.dart` (`CoreController`) selects the implementation based on platform (`system.isOhos` /
+`system.isAndroid`). `lib/core/interface.dart` defines the shared `CoreHandlerInterface`.
 
 Go core key files: `core/hub.go` (handler functions), `core/action.go` (dispatch), `core/lib.go` (CGO exports),
 `core/server.go` (socket server).
@@ -220,6 +227,34 @@ Architecture detection is automatic (host arch via `uname -m` on Unix, `PROCESSO
 
 Windows-only privileged helper for starting the core as admin and managing TUN. Built with
 `cargo build --release --features windows-service`. Token-based auth with Flutter app.
+
+### HarmonyOS NEXT (`ohos`) — in progress on `feat/ohos-support`
+
+The OpenHarmony host project lives in `ohos/` (ArkTS/ArkUI entry under `ohos/entry/src/main/ets/`, NAPI C++ bridge under
+`ohos/entry/src/main/cpp/`). `docs/harmonyos.md` is the authoritative status/work log (toolchain findings, emulator and
+real-device verification, the unresolved Web-container VPN gap). Read it before doing OHOS work — much of the device-only
+behavior is non-obvious and already investigated there.
+
+Key pieces:
+
+- **Go core:** OHOS-specific build-tagged files — `core/bride_ohos.go` (`//go:build ohos && cgo`), `core/tun/options_ohos.go`.
+  Go is gated behind `system.isOhos` checks across Dart (`lib/core/lib.dart`, `lib/common/constant.dart`, `link.dart`,
+  `picker.dart`).
+- **Patched Go toolchain:** `dart setup.dart ohos` auto-prepares an isolated toolchain at `.ohos_toolchain/go-nonglibc`
+  (via `scripts/ohos/prepare_go_toolchain.sh`) so `libclash.so` uses the `R_AARCH64_TLSDESC` TLS model instead of
+  `initial-exec` — required because the OHOS musl loader rejects the dynamic TLS resolution otherwise. Toolchain
+  selection lives in `build_tool/lib/src/go_builder.dart`.
+- **ArkTS layer:** `AppPlugin.ets` bridges core/VPN operations to Dart over a `MethodChannel`;
+  `FlClashVpnAbility.ets` is the system VPN extension ability (consent flows depend on the platform
+  `com.huawei.hmos.vpndialog` bundle, which is absent on the current Huawei emulator image — VPN must be toggled off to
+  validate dashboard/proxy runtime on emulator).
+- **Build prerequisites:** Set `OHOS_SDK_HOME` (and `OHOS_BASE_SDK_HOME`) to the OpenHarmony SDK root before
+  `flutter pub get` and before building. Native libs `ohos/entry/libs/arm64/{libsqlite3.so,libFlClashCore.so}` must
+  exist before packaging. Output: `dist/FlClash-<version>-ohos-arm64.hap`.
+- **Tooling/tests:** `scripts/ohos/*` cover install/launch smoke tests (`install_and_launch.sh`), stricter runtime
+  verification (`verify_runtime.sh`), VPN verification (`verify_*_vpn.sh`), and a local runtime test server
+  (`start_runtime_test_server.sh`). Node-based unit tests for OHOS helper scripts live in `test/ohos/*.test.mjs`
+  (run with `node`, not `flutter test`).
 
 ### Localization
 

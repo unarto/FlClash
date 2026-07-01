@@ -101,7 +101,10 @@ class SystemProxyButton extends StatelessWidget {
               return AdaptiveSheetScaffold(
                 body: generateListView(
                   generateSection(
-                    items: [const SystemProxyItem(), const BypassDomainItem()],
+                    items: [
+                      const SystemProxyItem(),
+                      if (!system.isOhos) const BypassDomainItem(),
+                    ],
                   ),
                 ),
                 title: appLocalizations.systemProxy,
@@ -176,7 +179,7 @@ class VpnButton extends StatelessWidget {
                   generateSection(
                     items: [
                       const VPNItem(),
-                      const VpnSystemProxyItem(),
+                      if (system.isAndroid) const VpnSystemProxyItem(),
                       const TunStackItem(),
                     ],
                   ),

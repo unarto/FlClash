@@ -1,5 +1,5 @@
 import 'package:fl_clash/common/indexing.dart';
-import 'package:test/test.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   final indexing = Indexing();

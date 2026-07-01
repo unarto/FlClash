@@ -105,7 +105,16 @@ ProxyState proxyState(Ref ref) {
   final isStart = ref.watch(runTimeProvider.select((state) => state != null));
   final vm2 = ref.watch(
     networkSettingProvider.select(
-      (state) => VM2(state.systemProxy, state.bypassDomain),
+      (state) => VM2(
+        resolveProxySystemProxy(
+          isOhos: system.isOhos,
+          systemProxy: state.systemProxy,
+        ),
+        resolveProxyBypassDomain(
+          isOhos: system.isOhos,
+          bypassDomain: state.bypassDomain,
+        ),
+      ),
     ),
   );
   final mixedPort = ref.watch(
@@ -167,7 +176,24 @@ TrayTitleState trayTitleState(Ref ref) {
 
 @riverpod
 VpnState vpnState(Ref ref) {
-  final vpnProps = ref.watch(vpnSettingProvider);
+  final vpnProps = ref.watch(
+    vpnSettingProvider.select(
+      (state) => state.copyWith(
+        systemProxy: resolveVpnSystemProxy(
+          isOhos: system.isOhos,
+          systemProxy: state.systemProxy,
+        ),
+        allowBypass: resolveVpnAllowBypass(
+          isOhos: system.isOhos,
+          allowBypass: state.allowBypass,
+        ),
+        accessControlProps: resolveVpnAccessControlProps(
+          isOhos: system.isOhos,
+          accessControlProps: state.accessControlProps,
+        ),
+      ),
+    ),
+  );
   final stack = ref.watch(
     patchClashConfigProvider.select((state) => state.tun.stack),
   );
@@ -602,7 +628,12 @@ SharedState sharedState(Ref ref) {
     ),
   );
   final bypassDomain = ref.watch(
-    networkSettingProvider.select((state) => state.bypassDomain),
+    networkSettingProvider.select(
+      (state) => resolveProxyBypassDomain(
+        isOhos: system.isOhos,
+        bypassDomain: state.bypassDomain,
+      ),
+    ),
   );
   final clashConfigVM2 = ref.watch(
     patchClashConfigProvider.select(
@@ -617,6 +648,18 @@ SharedState sharedState(Ref ref) {
   final testUrl = appSettingVM3.c;
   final stack = clashConfigVM2.a;
   final port = clashConfigVM2.b;
+  final systemProxy = resolveVpnSystemProxy(
+    isOhos: system.isOhos,
+    systemProxy: vpnSetting.systemProxy,
+  );
+  final allowBypass = resolveVpnAllowBypass(
+    isOhos: system.isOhos,
+    allowBypass: vpnSetting.allowBypass,
+  );
+  final accessControlProps = resolveVpnAccessControlProps(
+    isOhos: system.isOhos,
+    accessControlProps: vpnSetting.accessControlProps,
+  );
   return SharedState(
     currentProfileName: currentProfileName,
     onlyStatisticsProxy: onlyStatisticsProxy,
@@ -628,15 +671,71 @@ SharedState sharedState(Ref ref) {
     vpnOptions: VpnOptions(
       enable: vpnSetting.enable,
       stack: stack,
-      systemProxy: vpnSetting.systemProxy,
+      systemProxy: systemProxy,
       port: port,
       ipv6: vpnSetting.ipv6,
-      dnsHijacking: vpnSetting.dnsHijacking,
-      accessControlProps: vpnSetting.accessControlProps,
-      allowBypass: vpnSetting.allowBypass,
+      dnsHijacking: resolveVpnDnsHijacking(
+        isOhos: system.isOhos,
+        dnsHijacking: vpnSetting.dnsHijacking,
+      ),
+      accessControlProps: accessControlProps,
+      allowBypass: allowBypass,
       bypassDomain: bypassDomain,
     ),
   );
+}
+
+bool resolveVpnDnsHijacking({
+  required bool isOhos,
+  required bool dnsHijacking,
+}) {
+  return dnsHijacking;
+}
+
+bool resolveProxySystemProxy({
+  required bool isOhos,
+  required bool systemProxy,
+}) {
+  if (!isOhos) {
+    return systemProxy;
+  }
+  return true;
+}
+
+List<String> resolveProxyBypassDomain({
+  required bool isOhos,
+  required List<String> bypassDomain,
+}) {
+  if (!isOhos) {
+    return bypassDomain;
+  }
+  return defaultBypassDomain;
+}
+
+bool resolveVpnSystemProxy({required bool isOhos, required bool systemProxy}) {
+  if (!isOhos) {
+    return systemProxy;
+  }
+  return true;
+}
+
+bool resolveVpnAllowBypass({required bool isOhos, required bool allowBypass}) {
+  if (!isOhos) {
+    return allowBypass;
+  }
+  return true;
+}
+
+AccessControlProps resolveVpnAccessControlProps({
+  required bool isOhos,
+  required AccessControlProps accessControlProps,
+}) {
+  if (!isOhos) {
+    return accessControlProps;
+  }
+  // OHOS VPN access control is not wired into the platform extension yet, so
+  // keep runtime behavior aligned with the currently hidden UI.
+  return defaultAccessControlProps;
 }
 
 @riverpod

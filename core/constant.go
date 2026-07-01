@@ -78,6 +78,8 @@ const (
 	forceGcMethod                  Method = "forceGc"
 	shutdownMethod                 Method = "shutdown"
 	validateConfigMethod           Method = "validateConfig"
+	convertSubscriptionMethod      Method = "convertSubscription"
+	decodeQrImageMethod            Method = "decodeQrImage"
 	updateConfigMethod             Method = "updateConfig"
 	getProxiesMethod               Method = "getProxies"
 	changeProxyMethod              Method = "changeProxy"
@@ -127,6 +129,7 @@ const (
 	DelayMessage   MessageType = "delay"
 	RequestMessage MessageType = "request"
 	LoadedMessage  MessageType = "loaded"
+	CrashMessage   MessageType = "crash"
 )
 
 func (message *Message) Json() (string, error) {

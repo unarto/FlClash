@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:animations/animations.dart';
@@ -19,7 +20,97 @@ import 'database/database.dart';
 import 'enum/enum.dart';
 import 'l10n/l10n.dart';
 import 'models/models.dart';
+import 'plugins/app.dart';
 import 'providers/providers.dart';
+
+@visibleForTesting
+Future<void> runUiCoreStartupSequence(ProviderContainer container) async {
+  await container.read(coreActionProvider.notifier).connectCore();
+  if (container.read(coreStatusProvider) != CoreStatus.connected) {
+    return;
+  }
+  await container.read(coreActionProvider.notifier).initCore();
+  await container.read(setupActionProvider.notifier).initStatus();
+}
+
+@visibleForTesting
+Future<bool?> Function()? stopPendingDebugVpnAfterFailedInitStart = () async {
+  return await app?.stopVpn();
+};
+
+@visibleForTesting
+typedef PendingDebugVpnStartFinalizationResult =
+    ({bool finalized, String? failureMessage});
+
+@visibleForTesting
+Future<PendingDebugVpnStartFinalizationResult> finalizePendingDebugVpnStart(
+  ProviderContainer container,
+) async {
+  await container.read(setupActionProvider.notifier).updateStatus(
+    true,
+    isInit: true,
+  );
+  final started = container.read(isStartProvider);
+  if (started) {
+    return (finalized: true, failureMessage: null);
+  }
+  try {
+    final stopped = await stopPendingDebugVpnAfterFailedInitStart?.call();
+    commonPrint.log(
+      '[OHOS-DEBUG-VPN] rollback native start after init failure stopped=$stopped',
+      logLevel: stopped == true ? LogLevel.info : LogLevel.warning,
+    );
+    return (
+      finalized: false,
+      failureMessage: stopped == true
+          ? 'VPN 启动失败'
+          : formatOhosPendingDebugVpnRollbackFailure('VPN 停止失败'),
+    );
+  } on PlatformException catch (error) {
+    final stopFailureMessage = formatOhosVpnStopError(error);
+    commonPrint.log(
+      '[OHOS-DEBUG-VPN] rollback native start after init failure failed: '
+      '$stopFailureMessage',
+      logLevel: LogLevel.warning,
+    );
+    return (
+      finalized: false,
+      failureMessage: formatOhosPendingDebugVpnRollbackFailure(
+        stopFailureMessage,
+      ),
+    );
+  }
+}
+
+@visibleForTesting
+void applyPendingDebugVpnStartSettings(
+  ProviderContainer container, {
+  required String? stack,
+  required bool ipv6,
+}) {
+  if (stack != null && stack.isNotEmpty) {
+    final currentStack = container.read(
+      patchClashConfigProvider.select((state) => state.tun.stack),
+    );
+    final nextStack = TunStack.values.firstWhere(
+      (item) => item.name == stack,
+      orElse: () => currentStack,
+    );
+    container
+        .read(patchClashConfigProvider.notifier)
+        .update((state) => state.copyWith.tun(stack: nextStack));
+  }
+  container
+      .read(vpnSettingProvider.notifier)
+      .update((state) => state.copyWith(enable: true, ipv6: ipv6));
+}
+
+bool shouldSkipOhosUiCoreStartup(ProviderContainer container) {
+  return shouldUseOhosVpnConfigOnly(
+    isOhos: system.isOhos,
+    vpnEnabled: container.read(vpnStateProvider).vpnProps.enable,
+  );
+}
 
 class GlobalState {
   static GlobalState? _instance;
@@ -39,6 +130,9 @@ class GlobalState {
   String? lastConfigMd5;
   VpnState? lastVpnState;
   bool isAttach = false;
+  Future<void> _pendingOhosDebugVpnStart = Future.value();
+  bool _ohosPendingDebugVpnStartReady = false;
+  bool _isHandlingOhosPendingDebugVpnStart = false;
 
   GlobalState._internal();
 
@@ -46,6 +140,9 @@ class GlobalState {
     _instance ??= GlobalState._internal();
     return _instance!;
   }
+
+  bool get isHandlingOhosPendingDebugVpnStart =>
+      _isHandlingOhosPendingDebugVpnStart;
 
   Future<ProviderContainer> init(int version) async {
     coreSHA256 = const String.fromEnvironment('CORE_SHA256');
@@ -55,6 +152,10 @@ class GlobalState {
   }
 
   Future<void> _initDynamicColor() async {
+    accentColor = const Color(defaultPrimaryColor);
+    if (system.isOhos) {
+      return;
+    }
     try {
       corePalette = await DynamicColorPlugin.getCorePalette();
       accentColor =
@@ -65,7 +166,7 @@ class GlobalState {
 
   String get ua => container
       .read(patchClashConfigProvider.select((state) => state.globalUa))
-      .takeFirstValid([packageInfo.ua]);
+      .takeFirstValid([packageInfo.providerCompatibleUa]);
 
   BuildContext get _context => navigatorKey.currentContext!;
 
@@ -81,7 +182,7 @@ class GlobalState {
       systemUiOverlayStyle: const SystemUiOverlayStyle(),
     );
     final appStateOverrides = buildAppStateOverrides(appState);
-    packageInfo = await PackageInfo.fromPlatform();
+    packageInfo = await system.getPackageInfo();
     final configMap = await preferences.getConfigMap();
     final config = await migration.migrationIfNeeded(
       configMap,
@@ -281,12 +382,24 @@ class GlobalState {
   }
 
   Future<void> openUrl(String url) async {
+    commonPrint.log('[external-url] prompt url=$url');
     final res = await showMessage(
       message: TextSpan(text: url),
       title: currentAppLocalizations.externalLink,
       confirmText: currentAppLocalizations.go,
     );
+    commonPrint.log('[external-url] prompt result url=$url confirmed=$res');
     if (res != true) {
+      return;
+    }
+    if (system.isOhos) {
+      final success = await app?.openExternalUrl(url) ?? false;
+      commonPrint.log(
+        '[external-url] ohos open result url=$url success=$success',
+      );
+      if (!success) {
+        showNotifier('打开外部链接失败');
+      }
       return;
     }
     launchUrl(Uri.parse(url));
@@ -308,7 +421,9 @@ class GlobalState {
       );
     };
     container.read(systemActionProvider.notifier).updateTray();
-    container.read(profilesActionProvider.notifier).autoUpdateProfiles();
+    if (!shouldSkipOhosUiCoreStartup(container)) {
+      container.read(profilesActionProvider.notifier).autoUpdateProfiles();
+    } else {}
     container.read(commonActionProvider.notifier).autoCheckUpdate();
     autoLaunch?.updateStatus(container.read(appSettingProvider).autoLaunch);
     if (!container.read(appSettingProvider).silentLaunch) {
@@ -319,11 +434,119 @@ class GlobalState {
     await _handleFailedPreference();
     await _handlerDisclaimer();
     await _showCrashlyticsTip();
-    await container.read(coreActionProvider.notifier).connectCore();
-    await container.read(coreActionProvider.notifier).initCore();
-    await container.read(setupActionProvider.notifier).initStatus();
+    if (system.isOhos) {
+      await appPath.initOhosPaths();
+      await app?.updatePendingDebugVpnStartListenerReady(false);
+      app?.onPendingDebugVpnStart = (pending) async {
+        if (!_ohosPendingDebugVpnStartReady) {
+          throw MissingPluginException();
+        }
+        final currentPendingDebugVpnStart = _pendingOhosDebugVpnStart.then((_) async {
+          await _handlePendingDebugVpnStart(pending);
+        });
+        _pendingOhosDebugVpnStart = currentPendingDebugVpnStart.catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          commonPrint.log(
+            '[OHOS-DEBUG-VPN] hot pending start failed: $error stack: $stackTrace',
+            logLevel: LogLevel.warning,
+          );
+        });
+        await currentPendingDebugVpnStart;
+      };
+    }
+    final handledPendingDebugVpn = await _handlePendingDebugVpnStart();
+    final skipOhosUiCoreStartup = shouldSkipOhosUiCoreStartup(container);
+    if (!handledPendingDebugVpn && !skipOhosUiCoreStartup) {
+      await runUiCoreStartupSequence(container);
+    } else {
+      await container.read(setupActionProvider.notifier).initStatus();
+    }
+    _ohosPendingDebugVpnStartReady = true;
+    await app?.updatePendingDebugVpnStartListenerReady(true);
     container.read(initProvider.notifier).value = true;
     permissions.check();
+  }
+
+  Future<bool> _handlePendingDebugVpnStart([
+    Map<String, dynamic>? pending,
+  ]) async {
+    if (!system.isOhos) {
+      return false;
+    }
+    final currentPending = pending ?? await app?.consumePendingDebugVpnStart();
+    if (currentPending == null) {
+      return false;
+    }
+    final stack = currentPending['stack']?.toString();
+    final ipv6 = currentPending['ipv6'] == true;
+    _isHandlingOhosPendingDebugVpnStart = true;
+    try {
+      applyPendingDebugVpnStartSettings(
+        container,
+        stack: stack,
+        ipv6: ipv6,
+      );
+      final prepared = await container
+          .read(setupActionProvider.notifier)
+          .prepareProfileConfigOnly(force: true);
+      if (!prepared) {
+        const message = 'VPN 启动失败';
+        commonPrint.log(
+          '[OHOS-DEBUG-VPN] prepare profile failed before native start',
+          logLevel: LogLevel.warning,
+        );
+        showNotifier(message);
+        return false;
+      }
+      final vpnState = container.read(vpnStateProvider);
+      final setupParams = container
+          .read(setupActionProvider.notifier)
+          .setupParams;
+      final homeDir = await appPath.homeDirPath;
+      try {
+        final started = await app?.startVpn(
+          stack: vpnState.stack.name,
+          ipv6: vpnState.vpnProps.ipv6,
+          initParamsJson: json.encode({
+            'home-dir': homeDir,
+            'version': container.read(versionProvider),
+          }),
+          setupParamsJson: json.encode(setupParams.toJson()),
+          coreSocketPath: unixSocketPath,
+        );
+        if (started != true) {
+          const message = 'VPN 启动失败';
+          commonPrint.log(
+            '[OHOS-DEBUG-VPN] direct start did not return true',
+            logLevel: LogLevel.warning,
+          );
+          showNotifier(message);
+          return false;
+        }
+        final finalizationResult = await finalizePendingDebugVpnStart(container);
+        if (!finalizationResult.finalized) {
+          final message = finalizationResult.failureMessage ?? 'VPN 启动失败';
+          commonPrint.log(
+            '[OHOS-DEBUG-VPN] finalization failed after native start: $message',
+            logLevel: LogLevel.warning,
+          );
+          showNotifier(message);
+        }
+        return finalizationResult.finalized;
+      } on PlatformException catch (error) {
+        final message = formatOhosVpnStartError(error);
+        commonPrint.log(
+          '[OHOS-DEBUG-VPN] direct start failed: $message',
+          logLevel: LogLevel.warning,
+        );
+        showNotifier(message);
+        return false;
+      }
+    } finally {
+      _isHandlingOhosPendingDebugVpnStart = false;
+    }
   }
 
   Future<void> _handleFailedPreference() async {
@@ -365,7 +588,7 @@ class GlobalState {
   }
 
   Future<void> _showCrashlyticsTip() async {
-    if (!system.isAndroid) return;
+    if (!system.isAndroid || system.isOhos) return;
     if (container.read(
       appSettingProvider.select((state) => state.crashlyticsTip),
     )) {
@@ -382,6 +605,12 @@ class GlobalState {
   }
 
   Future<void> _handlerDisclaimer() async {
+    if (system.isOhos) {
+      container
+          .read(appSettingProvider.notifier)
+          .update((state) => state.copyWith(disclaimerAccepted: true));
+      return;
+    }
     if (container.read(
       appSettingProvider.select((state) => state.disclaimerAccepted),
     )) {
