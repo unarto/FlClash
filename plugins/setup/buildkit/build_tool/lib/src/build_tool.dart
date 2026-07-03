@@ -91,6 +91,41 @@ class BuildAndroidCommand extends BuildCommand {
   }
 }
 
+class BuildOhosCommand extends BuildCommand {
+  BuildOhosCommand() {
+    argParser.addOption(
+      'arch',
+      valueHelp: 'arm64',
+      help: 'Target architecture (default: arm64)',
+    );
+  }
+
+  @override
+  final name = 'ohos';
+
+  @override
+  final description = 'Build OpenHarmony Go core (c-shared library)';
+
+  @override
+  Future<void> runBuildCommand() async {
+    final archName = argResults?['arch'] as String?;
+    final arch = archName ?? 'arm64';
+    final config = BuildConfig.load(rootDir: _rootDir);
+
+    final targets =
+        Target.forPlatform('ohos').where((t) => t.goarch == arch).toList();
+
+    if (targets.isEmpty) {
+      throw BuildException('Invalid arch: $arch');
+    }
+
+    final builder = GoBuilder(rootDir: _rootDir, config: config);
+    final corePaths = await builder.buildAll(targets);
+
+    _log.info('Build complete: $corePaths');
+  }
+}
+
 class BuildLinuxCommand extends BuildCommand {
   BuildLinuxCommand() {
     argParser.addOption(
@@ -226,6 +261,7 @@ Future<void> runMain(List<String> args) async {
         help: 'Project root directory (default: auto-detect)',
       )
       ..addCommand(BuildAndroidCommand())
+      ..addCommand(BuildOhosCommand())
       ..addCommand(BuildLinuxCommand())
       ..addCommand(BuildWindowsCommand())
       ..addCommand(BuildMacosCommand());

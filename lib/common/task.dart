@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:archive/archive_io.dart';
 import 'package:drift/drift.dart';
-import 'package:drift_flutter/drift_flutter.dart';
+import 'package:drift/native.dart';
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/database/database.dart';
 import 'package:fl_clash/enum/enum.dart';
@@ -12,6 +13,8 @@ import 'package:fl_clash/models/models.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart';
+import 'package:sqlite3/open.dart' as sqlite_open;
+import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
 Future<T> decodeJSONTask<T>(String data) async {
   return compute<String, T>(_decodeJSON, data);
@@ -218,6 +221,19 @@ Future<VM2<String, String>> _makeRealProfileTask(
       rawConfig['dns']['nameserver'] = [...nameserver, systemDns];
     }
   }
+  if (system.isOhos) {
+    rawConfig['profile'] = normalizeOhosProfileConfig(
+      rawConfig['profile'] as Map? ?? const {},
+    );
+    rawConfig['dns'] = normalizeOhosDnsConfig(
+      rawConfig['dns'] as Map? ?? const {},
+      realPatchConfig.dns,
+    );
+    rawConfig['tun']['dns-hijack'] = normalizeOhosTunDnsHijack(
+      List<String>.from(rawConfig['tun']['dns-hijack'] ?? const []),
+    );
+    rawConfig['log-level'] = 'info';
+  }
   List<String> rules = [];
   if (data.rules.isEmpty) {
     if (rawConfig['rules'] != null) {
@@ -263,6 +279,9 @@ Future<VM2<String, String>> _makeRealProfileTask(
   } else {
     rules = data.rules.map((item) => item.rawValue).toList();
   }
+  if (system.isOhos) {
+    rules = prependOhosDirectRules(rules);
+  }
   if (data.proxyGroups.isNotEmpty) {
     rawConfig['proxy-groups'] = data.proxyGroups;
   }
@@ -271,25 +290,238 @@ Future<VM2<String, String>> _makeRealProfileTask(
   return VM2(yaml, yaml.toMd5());
 }
 
+Map<String, dynamic> normalizeOhosDnsConfig(Map dnsConfig, Dns patchDns) {
+  const ohosDirectSystemDns = 'system://';
+  final normalized = Map<String, dynamic>.from(dnsConfig);
+  normalized['listen'] = patchDns.listen.isEmpty
+      ? defaultDns.listen
+      : patchDns.listen;
+  if ((normalized['enable'] as bool?) != true) {
+    normalized['enable'] = true;
+  }
+  final nameserver = List<String>.from(normalized['nameserver'] ?? const []);
+  final fallback = List<String>.from(normalized['fallback'] ?? const []);
+  final patchFallback = patchDns.fallback;
+  if (fallback.isEmpty && patchFallback.isNotEmpty) {
+    normalized['fallback'] = patchFallback;
+  }
+  if (_shouldPreferOhosFallbackResolvers(nameserver, patchDns)) {
+    normalized['nameserver'] = List<String>.from(
+      fallback.isNotEmpty ? fallback : patchFallback,
+    );
+  } else if (nameserver.isEmpty) {
+    normalized['nameserver'] = patchDns.nameserver;
+  }
+  final ohosDirectResolvers = _resolveOhosBootstrapDnsResolvers(
+    normalized,
+    patchDns,
+  );
+  final directNameserver = List<String>.from(
+    normalized['direct-nameserver'] ?? const [],
+  );
+  if (directNameserver.isEmpty) {
+    normalized['direct-nameserver'] = [ohosDirectSystemDns];
+    normalized['direct-nameserver-follow-policy'] = false;
+  }
+  final nameserverPolicy = Map<String, dynamic>.from(
+    normalized['nameserver-policy'] ?? const <String, dynamic>{},
+  );
+  for (final domain in _ohosHuaweiSystemDnsDomains) {
+    nameserverPolicy.putIfAbsent(domain, () => ohosDirectResolvers);
+  }
+  normalized['nameserver-policy'] = nameserverPolicy;
+  final fakeIpFilter = List<String>.from(
+    normalized['fake-ip-filter'] ?? const <String>[],
+  );
+  for (final domain in _ohosHuaweiFakeIpFilterDomains) {
+    if (fakeIpFilter.contains(domain)) {
+      continue;
+    }
+    fakeIpFilter.add(domain);
+  }
+  normalized['fake-ip-filter'] = fakeIpFilter;
+  return normalized;
+}
+
+bool _shouldPreferOhosFallbackResolvers(
+  List<String> nameserver,
+  Dns patchDns,
+) {
+  if (nameserver.isEmpty) {
+    return false;
+  }
+  final patchFallback = patchDns.fallback;
+  if (patchFallback.isEmpty) {
+    return false;
+  }
+  final normalizedNameserver = nameserver
+      .map((item) => item.trim())
+      .where((item) => item != 'system://')
+      .toList();
+  final normalizedPatchNameserver = patchDns.nameserver
+      .map((item) => item.trim())
+      .toList();
+  if (normalizedNameserver.length != normalizedPatchNameserver.length) {
+    return false;
+  }
+  for (var i = 0; i < normalizedNameserver.length; i++) {
+    if (normalizedNameserver[i] != normalizedPatchNameserver[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+List<String> _resolveOhosBootstrapDnsResolvers(
+  Map<String, dynamic> dnsConfig,
+  Dns patchDns,
+) {
+  const systemDns = 'system://';
+  final resolvers = <String>[];
+
+  void addAll(dynamic source) {
+    for (final item in List<String>.from(source ?? const <String>[])) {
+      if (item.isEmpty || item == systemDns || resolvers.contains(item)) {
+        continue;
+      }
+      resolvers.add(item);
+    }
+  }
+
+  addAll(dnsConfig['default-nameserver']);
+  addAll(patchDns.defaultNameserver);
+  if (resolvers.isEmpty) {
+    addAll(dnsConfig['direct-nameserver']);
+  }
+  if (resolvers.isEmpty) {
+    addAll(dnsConfig['nameserver']);
+    addAll(patchDns.nameserver);
+  }
+  return resolvers.isEmpty ? [systemDns] : resolvers;
+}
+
+List<String> prependOhosDirectRules(List<String> rules) {
+  final remainingRules = List<String>.from(rules);
+  final prependedRules = <String>[];
+  for (final rule in _ohosHuaweiDirectRules) {
+    if (remainingRules.remove(rule)) {
+      prependedRules.add(rule);
+      continue;
+    }
+    prependedRules.add(rule);
+  }
+  return [...prependedRules, ...remainingRules];
+}
+
+List<String> normalizeOhosTunDnsHijack(List<String> dnsHijack) {
+  if (dnsHijack.isEmpty) {
+    return ['0.0.0.0:53'];
+  }
+  final normalized = <String>[];
+  for (final item in dnsHijack) {
+    final value = item == 'any:53' ? '0.0.0.0:53' : item;
+    if (normalized.contains(value)) {
+      continue;
+    }
+    normalized.add(value);
+  }
+  return normalized;
+}
+
+Map<String, dynamic> normalizeOhosProfileConfig(Map profile) {
+  final normalized = Map<String, dynamic>.from(profile);
+  normalized['store-selected'] = false;
+  normalized['store-fake-ip'] = false;
+  return normalized;
+}
+
+const _ohosHuaweiSystemDnsDomains = [
+  'browsercfg-drcn.cloud.dbankcloud.cn',
+  'browserr-drcn.dbankcdn.cn',
+  'configserver-drcn.platform.dbankcloud.cn',
+  'httpdns.platform.dbankcloud.com',
+  'httpdns-browser.platform.dbankcloud.cn',
+  'contentcenter-drcn.cloud.dbankcloud.cn',
+  'newsfeed-drcn.cloud.dbankcloud.cn',
+  'nps-drcn.platform.dbankcloud.cn',
+  'terms-drcn.platform.dbankcloud.cn',
+  'metrics1-drcn.dt.dbankcloud.cn',
+  'sdkserver-drcn.op.dbankcloud.cn',
+  'feeds-drcn.cloud.huawei.com.cn',
+  '+.grs.dbankcloud.cn',
+  '+.grs.dbankcloud.com',
+];
+
+const _ohosHuaweiFakeIpFilterDomains = [
+  'browsercfg-drcn.cloud.dbankcloud.cn',
+  'browserr-drcn.dbankcdn.cn',
+  'configserver-drcn.platform.dbankcloud.cn',
+  'httpdns.platform.dbankcloud.com',
+  'httpdns-browser.platform.dbankcloud.cn',
+  'contentcenter-drcn.cloud.dbankcloud.cn',
+  'newsfeed-drcn.cloud.dbankcloud.cn',
+  'nps-drcn.platform.dbankcloud.cn',
+  'terms-drcn.platform.dbankcloud.cn',
+  'metrics1-drcn.dt.dbankcloud.cn',
+  'sdkserver-drcn.op.dbankcloud.cn',
+  'feeds-drcn.cloud.huawei.com.cn',
+  '*.grs.dbankcloud.cn',
+  '*.grs.dbankcloud.com',
+];
+
+const _ohosHuaweiDirectRules = [
+  'IP-CIDR,139.9.98.98/32,DIRECT,no-resolve',
+  'IP-CIDR,139.9.99.99/32,DIRECT,no-resolve',
+  'DOMAIN,browsercfg-drcn.cloud.dbankcloud.cn,DIRECT',
+  'DOMAIN,browserr-drcn.dbankcdn.cn,DIRECT',
+  'DOMAIN,configserver-drcn.platform.dbankcloud.cn,DIRECT',
+  'DOMAIN,httpdns.platform.dbankcloud.com,DIRECT',
+  'DOMAIN,httpdns-browser.platform.dbankcloud.cn,DIRECT',
+  'DOMAIN,contentcenter-drcn.cloud.dbankcloud.cn,DIRECT',
+  'DOMAIN,newsfeed-drcn.cloud.dbankcloud.cn,DIRECT',
+  'DOMAIN,nps-drcn.platform.dbankcloud.cn,DIRECT',
+  'DOMAIN,terms-drcn.platform.dbankcloud.cn,DIRECT',
+  'DOMAIN,metrics1-drcn.dt.dbankcloud.cn,DIRECT',
+  'DOMAIN,sdkserver-drcn.op.dbankcloud.cn,DIRECT',
+  'DOMAIN,feeds-drcn.cloud.huawei.com.cn,DIRECT',
+];
+
 Future<List<String>> shakingProfileTask(
-  VM2<Iterable<int>, Iterable<int>> data,
+  VM3<Iterable<int>, Iterable<int>, VM3<String, String, String>> data,
 ) async {
   return compute<
-    VM3<Iterable<int>, Iterable<int>, RootIsolateToken>,
+    VM4<
+      Iterable<int>,
+      Iterable<int>,
+      VM3<String, String, String>,
+      RootIsolateToken
+    >,
     List<String>
-  >(_shakingProfileTask, VM3(data.a, data.b, RootIsolateToken.instance!));
+  >(
+    _shakingProfileTask,
+    VM4(data.a, data.b, data.c, RootIsolateToken.instance!),
+  );
 }
 
 Future<List<String>> _shakingProfileTask(
-  VM3<Iterable<int>, Iterable<int>, RootIsolateToken> data,
+  VM4<
+    Iterable<int>,
+    Iterable<int>,
+    VM3<String, String, String>,
+    RootIsolateToken
+  >
+  data,
 ) async {
   final profileIds = data.a;
   final scriptIds = data.b;
-  final token = data.c;
+  final profilesPath = data.c.a;
+  final scriptsDirPath = data.c.b;
+  final providersRootPath = data.c.c;
+  final token = data.d;
   BackgroundIsolateBinaryMessenger.ensureInitialized(token);
-  final profilesDir = Directory(await appPath.profilesPath);
-  final scriptsDir = Directory(await appPath.scriptsDirPath);
-  final providersDir = Directory(await appPath.getProvidersRootPath());
+  final profilesDir = Directory(profilesPath);
+  final scriptsDir = Directory(scriptsDirPath);
+  final providersDir = Directory(providersRootPath);
   final List<String> targets = [];
   void scanDirectory(
     Directory dir,
@@ -331,10 +563,10 @@ Future<String> _encodeLogsTask(List<Log> data) async {
 
 Future<MigrationData> oldToNowTask(Map<String, Object?> data) async {
   final homeDir = await appPath.homeDirPath;
-  return compute<
-    VM3<Map<String, Object?>, String, String>,
-    MigrationData
-  >(_oldToNowTask, VM3(data, homeDir, homeDir));
+  return compute<VM3<Map<String, Object?>, String, String>, MigrationData>(
+    _oldToNowTask,
+    VM3(data, homeDir, homeDir),
+  );
 }
 
 Future<MigrationData> _oldToNowTask(
@@ -473,26 +705,38 @@ Future<String> backupTask(
   Map<String, dynamic> configMap,
   Iterable<String> fileNames,
 ) async {
-  return compute<
-    VM3<Map<String, dynamic>, Iterable<String>, RootIsolateToken>,
-    String
-  >(_backupTask, VM3(configMap, fileNames, RootIsolateToken.instance!));
+  final tempRootPath = await appPath.tempPath;
+  final args = <String, dynamic>{
+    'configMap': configMap,
+    'fileNames': fileNames.toList(),
+    'dbPath': await appPath.databasePath,
+    'profilesPath': await appPath.profilesPath,
+    'scriptsPath': await appPath.scriptsDirPath,
+    'tempZipFilePath': join(tempRootPath, 'backup-${utils.id}.zip'),
+    'tempDBFilePath': join(tempRootPath, 'backup-${utils.id}.db'),
+    'tempConfigFilePath': join(tempRootPath, 'backup-${utils.id}.json'),
+  };
+  return compute<VM2<Map<String, dynamic>, RootIsolateToken>, String>(
+    _backupTask,
+    VM2(args, RootIsolateToken.instance!),
+  );
 }
 
-Future<String> _backupTask<T>(
-  VM3<Map<String, dynamic>, Iterable<String>, RootIsolateToken> args,
+Future<String> _backupTask(
+  VM2<Map<String, dynamic>, RootIsolateToken> args,
 ) async {
-  final configMap = args.a;
-  final fileNames = args.b;
-  final token = args.c;
+  final params = args.a;
+  final token = args.b;
   BackgroundIsolateBinaryMessenger.ensureInitialized(token);
-  final dbPath = await appPath.databasePath;
+  final configMap = Map<String, dynamic>.from(params['configMap'] as Map);
+  final fileNames = (params['fileNames'] as List).cast<String>();
+  final dbPath = params['dbPath'] as String;
   final configStr = json.encode(configMap);
-  final profilesDir = Directory(await appPath.profilesPath);
-  final scriptsDir = Directory(await appPath.scriptsDirPath);
-  final tempZipFilePath = await appPath.tempFilePath;
-  final tempDBFile = File(await appPath.tempFilePath);
-  final tempConfigFile = File(await appPath.tempFilePath);
+  final profilesDir = Directory(params['profilesPath'] as String);
+  final scriptsDir = Directory(params['scriptsPath'] as String);
+  final tempZipFilePath = params['tempZipFilePath'] as String;
+  final tempDBFile = File(params['tempDBFilePath'] as String);
+  final tempConfigFile = File(params['tempConfigFilePath'] as String);
   final dbFile = File(dbPath);
   if (await dbFile.exists()) {
     await dbFile.copy(tempDBFile.path);
@@ -531,32 +775,52 @@ Future<String> _backupTask<T>(
 }
 
 Future<MigrationData> restoreTask() async {
-  return compute<RootIsolateToken, MigrationData>(
+  final args = <String, String>{
+    'backupFilePath': await appPath.backupFilePath,
+    'restoreDirPath': await appPath.restoreDirPath,
+    'homeDirPath': await appPath.homeDirPath,
+  };
+  return compute<VM2<Map<String, String>, RootIsolateToken>, MigrationData>(
     _restoreTask,
-    RootIsolateToken.instance!,
+    VM2(args, RootIsolateToken.instance!),
   );
 }
 
-Future<MigrationData> _restoreTask(RootIsolateToken token) async {
+Future<MigrationData> _restoreTask(
+  VM2<Map<String, String>, RootIsolateToken> args,
+) async {
+  final params = args.a;
+  final token = args.b;
   BackgroundIsolateBinaryMessenger.ensureInitialized(token);
-  final backupFilePath = await appPath.backupFilePath;
-  final restoreDirPath = await appPath.restoreDirPath;
-  final homeDirPath = await appPath.homeDirPath;
+  final backupFilePath = params['backupFilePath']!;
+  final restoreDirPath = params['restoreDirPath']!;
+  final homeDirPath = params['homeDirPath']!;
   final zipDecoder = ZipDecoder();
   final input = InputFileStream(backupFilePath);
   final archive = zipDecoder.decodeStream(input);
   final dir = Directory(restoreDirPath);
   await dir.create(recursive: true);
   for (final file in archive.files) {
-    final outPath = join(restoreDirPath, posix.normalize(file.name));
-    final outputStream = OutputFileStream(outPath);
-    file.writeContent(outputStream);
-    await outputStream.close();
+    final normalizedPath = posix.normalize(file.name);
+    if (normalizedPath.isEmpty ||
+        normalizedPath == '.' ||
+        normalizedPath == '..') {
+      continue;
+    }
+    final outPath = join(restoreDirPath, normalizedPath);
+    if (file.isFile && !normalizedPath.endsWith('/')) {
+      await Directory(dirname(outPath)).create(recursive: true);
+      final outputStream = OutputFileStream(outPath);
+      file.writeContent(outputStream);
+      await outputStream.close();
+      continue;
+    }
+    await Directory(outPath).create(recursive: true);
   }
   await input.close();
   final restoreConfigFile = File(join(restoreDirPath, configJsonName));
   if (!await restoreConfigFile.exists()) {
-    throw currentAppLocalizations.invalidBackupFile;
+    throw StateError('invalid backup file');
   }
   final restoreConfigMap =
       json.decode(await restoreConfigFile.readAsString())
@@ -573,14 +837,11 @@ Future<MigrationData> _restoreTask(RootIsolateToken token) async {
   if (!await backupDatabaseFile.exists()) {
     return migrationData;
   }
-  final database = Database(
-    driftDatabase(
-      name: 'database',
-      native: DriftNativeOptions(
-        databaseDirectory: () async => Directory(restoreDirPath),
-      ),
-    ),
-  );
+  if (system.isOhos) {
+    sqlite_open.open.overrideForAll(() => DynamicLibrary.open('libsqlite3.so'));
+    sqlite3.sqlite3.tempDirectory = '/data/storage/el2/base/temp';
+  }
+  final database = Database(NativeDatabase(backupDatabaseFile));
   final results = await Future.wait([
     database.profilesDao.query().get(),
     database.scriptsDao.query().get(),

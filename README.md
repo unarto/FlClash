@@ -121,6 +121,34 @@ Support the following actions
            dart setup.dart macos
            ```
 
+    - HarmonyOS NEXT packaging scaffold
+
+        1. Install DevEco Studio / OpenHarmony SDK and a Harmony-enabled Flutter SDK
+
+        2. Review the migration notes and current limitations:
+
+           ```bash
+           cat docs/harmonyos.md
+           ```
+
+        3. Build the signed HAP artifact with the repository packaging entry:
+
+           ```bash
+           dart setup.dart ohos
+           ```
+
+        4. Smoke-test install and launch on a HarmonyOS emulator:
+
+           ```bash
+           bash scripts/ohos/install_and_launch.sh
+           ```
+
+        5. Verify the OHOS runtime reaches core initialization:
+
+           ```bash
+           bash scripts/ohos/verify_runtime.sh
+           ```
+
 ## Star
 
 The easiest way to support developers is to click on the star (⭐) at the top of the page.

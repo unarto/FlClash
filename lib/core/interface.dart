@@ -18,6 +18,10 @@ mixin CoreInterface {
 
   Future<String> validateConfig(String path);
 
+  Future<String> convertSubscription(String data);
+
+  Future<String> decodeQrImage(String path);
+
   Future<Result> getConfig(String path);
 
   Future<String> asyncTestDelay(String url, String proxyName);
@@ -151,6 +155,24 @@ abstract class CoreHandlerInterface with CoreInterface {
   }
 
   @override
+  Future<String> convertSubscription(String data) async {
+    return await _invoke<String>(
+          method: ActionMethod.convertSubscription,
+          data: data,
+        ) ??
+        '';
+  }
+
+  @override
+  Future<String> decodeQrImage(String path) async {
+    return await _invoke<String>(
+          method: ActionMethod.decodeQrImage,
+          data: path,
+        ) ??
+        '';
+  }
+
+  @override
   Future<String> updateConfig(UpdateParams updateParams) async {
     return await _invoke<String>(
           method: ActionMethod.updateConfig,
@@ -184,9 +206,10 @@ abstract class CoreHandlerInterface with CoreInterface {
     final data = await _invoke<Map<String, dynamic>>(
       method: ActionMethod.getProxies,
     );
-    return data != null
+    final proxiesData = data != null
         ? ProxiesData.fromJson(data)
         : const ProxiesData(proxies: {}, all: []);
+    return proxiesData;
   }
 
   @override
@@ -326,7 +349,7 @@ abstract class CoreHandlerInterface with CoreInterface {
     return await _invoke<String>(
           method: ActionMethod.asyncTestDelay,
           data: json.encode(delayParams),
-          timeout: const Duration(seconds: 6),
+          timeout: httpTimeoutDuration + const Duration(seconds: 10),
         ) ??
         json.encode(Delay(name: proxyName, value: -1, url: url));
   }

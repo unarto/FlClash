@@ -87,7 +87,10 @@ class _DashboardViewState extends ConsumerState<DashboardView> {
                           },
                         ),
                         onPressed: _handleConnection,
-                        icon: const Icon(Icons.check, fontWeight: FontWeight.w900),
+                        icon: const Icon(
+                          Icons.check,
+                          fontWeight: FontWeight.w900,
+                        ),
                       )
                     : FilledButton.icon(
                         key: ValueKey(coreStatus),
@@ -213,11 +216,14 @@ class _DashboardViewState extends ConsumerState<DashboardView> {
     if (currentState == null) {
       return;
     }
-    if (mounted && currentState.children.isNotEmpty) {
+    if (mounted && currentState.currentChildren.isNotEmpty) {
       await currentState.isTransformCompleter;
-      final dashboardWidgets = currentState.children
+      final dashboardWidgets = currentState.currentChildren
           .map((item) => DashboardWidget.getDashboardWidget(item))
           .toList();
+      commonPrint.log(
+        '[dashboard-save] widgets=${dashboardWidgets.map((item) => item.name).join(",")}',
+      );
       ref
           .read(appSettingProvider.notifier)
           .update(

@@ -38,6 +38,7 @@ body:
       label: 操作系统 / OS
       options:
         - Android
+        - HarmonyOS
         - Windows
         - MacOS
         - Linux

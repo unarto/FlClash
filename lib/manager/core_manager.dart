@@ -10,6 +10,13 @@ import 'package:fl_clash/state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+bool shouldForceStartLogOnInit({
+  required bool isOhos,
+  required bool openLogs,
+}) {
+  return isOhos && openLogs;
+}
+
 class CoreManager extends ConsumerStatefulWidget {
   final Widget child;
 
@@ -30,10 +37,38 @@ class _CoreContainerState extends ConsumerState<CoreManager>
   void initState() {
     super.initState();
     coreEventManager.addListener(this);
+    if (shouldForceStartLogOnInit(
+      isOhos: system.isOhos,
+      openLogs: ref.read(appSettingProvider).openLogs,
+    )) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        commonPrint.log('[OHOS-CORE] force startLog on init');
+        coreController.startLog();
+      });
+    }
     ref.listenManual(currentProfileIdProvider, (prev, next) {
+      commonPrint.log(
+        '[profile-select-core] currentProfileId changed prev=$prev next=$next',
+      );
       if (prev != next) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          ref.read(setupActionProvider.notifier).fullSetup();
+          () async {
+            commonPrint.log(
+              '[profile-select-core] fullSetup begin prev=$prev next=$next',
+            );
+            final applied = await ref
+                .read(setupActionProvider.notifier)
+                .fullSetup();
+            commonPrint.log(
+              '[profile-select-core] fullSetup end prev=$prev next=$next applied=$applied current=${ref.read(currentProfileIdProvider)}',
+            );
+            if (!applied && prev != null) {
+              commonPrint.log(
+                '[profile-select-core] revert currentProfileId to prev=$prev',
+              );
+              ref.read(currentProfileIdProvider.notifier).value = prev;
+            }
+          }();
         });
       }
     });
@@ -46,6 +81,9 @@ class _CoreContainerState extends ConsumerState<CoreManager>
       prev,
       next,
     ) {
+      if (system.isOhos) {
+        commonPrint.log('[OHOS-CORE] startLog listener toggle next=$next');
+      }
       if (next) {
         coreController.startLog();
       } else {
@@ -81,7 +119,11 @@ class _CoreContainerState extends ConsumerState<CoreManager>
 
   @override
   void onRequest(TrackerInfo trackerInfo) async {
-    ref.read(requestsProvider.notifier).addRequest(trackerInfo);
+    final requestsNotifier = ref.read(requestsProvider.notifier);
+    requestsNotifier.addRequest(trackerInfo);
+    commonPrint.log(
+      '[OHOS-CORE] onRequest stored id=${trackerInfo.id} host=${trackerInfo.metadata.host} requests=${ref.read(requestsProvider).length}',
+    );
     super.onRequest(trackerInfo);
   }
 

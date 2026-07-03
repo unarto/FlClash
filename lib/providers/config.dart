@@ -109,8 +109,10 @@ class ExcludeSSIDs extends _$ExcludeSSIDs with AutoDisposeNotifierMixin {
 Config _config(Ref ref) {
   final appSettingProps = ref.watch(appSettingProvider);
   final windowProps = ref.watch(windowSettingProvider);
-  final vpnProps = ref.watch(vpnSettingProvider);
-  final networkProps = ref.watch(networkSettingProvider);
+  final vpnProps = normalizeOhosVpnProps(ref.watch(vpnSettingProvider));
+  final networkProps = normalizeOhosNetworkProps(
+    ref.watch(networkSettingProvider),
+  );
   final themeProps = ref.watch(themeSettingProvider);
   final currentProfileId = ref.watch(currentProfileIdProvider);
   final davProps = ref.watch(davSettingProvider);
@@ -139,8 +141,12 @@ List<Override> buildConfigOverrides(Config config) {
   return [
     appSettingProvider.overrideWithBuild((_, _) => config.appSettingProps),
     windowSettingProvider.overrideWithBuild((_, _) => config.windowProps),
-    vpnSettingProvider.overrideWithBuild((_, _) => config.vpnProps),
-    networkSettingProvider.overrideWithBuild((_, _) => config.networkProps),
+    vpnSettingProvider.overrideWithBuild(
+      (_, _) => normalizeOhosVpnProps(config.vpnProps),
+    ),
+    networkSettingProvider.overrideWithBuild(
+      (_, _) => normalizeOhosNetworkProps(config.networkProps),
+    ),
     themeSettingProvider.overrideWithBuild((_, _) => config.themeProps),
     currentProfileIdProvider.overrideWithBuild(
       (_, _) => config.currentProfileId,

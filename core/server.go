@@ -66,12 +66,16 @@ func send(data []byte) {
 
 func startServer(arg string) {
 	var err error
+	debugCoreLog("startServer dial begin address=%s", arg)
 	conn, err = dial(arg)
 	if err != nil {
+		debugCoreLog("startServer dial failed address=%s err=%v", arg, err)
 		panic(err.Error())
 	}
+	debugCoreLog("startServer dial connected address=%s", arg)
 
 	defer func(conn io.Closer) {
+		debugCoreLog("startServer closing connection")
 		_ = conn.Close()
 	}(conn)
 
@@ -80,7 +84,9 @@ func startServer(arg string) {
 		if err != nil {
 			if err != io.EOF {
 				logError("server read error: %v", err)
+				debugCoreLog("startServer read error err=%v", err)
 			}
+			debugCoreLog("startServer read loop exit err=%v", err)
 			return
 		}
 		var action = &Action{}

@@ -25,9 +25,9 @@ void main() {
     });
 
     test('can update state', () {
-      container.read(appSettingProvider.notifier).update(
-            (_) => const AppSettingProps(autoLaunch: true),
-          );
+      container
+          .read(appSettingProvider.notifier)
+          .update((_) => const AppSettingProps(autoLaunch: true));
       final value = container.read(appSettingProvider);
       expect(value.autoLaunch, true);
     });
@@ -41,9 +41,9 @@ void main() {
     });
 
     test('can update state', () {
-      container.read(windowSettingProvider.notifier).update(
-            (_) => const WindowProps(width: 1024, height: 768),
-          );
+      container
+          .read(windowSettingProvider.notifier)
+          .update((_) => const WindowProps(width: 1024, height: 768));
       final value = container.read(windowSettingProvider);
       expect(value.width, 1024);
       expect(value.height, 768);
@@ -58,9 +58,9 @@ void main() {
     });
 
     test('can update state', () {
-      container.read(vpnSettingProvider.notifier).update(
-            (_) => const VpnProps(enable: false),
-          );
+      container
+          .read(vpnSettingProvider.notifier)
+          .update((_) => const VpnProps(enable: false));
       expect(container.read(vpnSettingProvider).enable, false);
     });
   });
@@ -73,9 +73,9 @@ void main() {
     });
 
     test('can update state', () {
-      container.read(networkSettingProvider.notifier).update(
-            (_) => const NetworkProps(systemProxy: false),
-          );
+      container
+          .read(networkSettingProvider.notifier)
+          .update((_) => const NetworkProps(systemProxy: false));
       expect(container.read(networkSettingProvider).systemProxy, false);
     });
   });
@@ -87,13 +87,10 @@ void main() {
     });
 
     test('can update state', () {
-      container.read(themeSettingProvider.notifier).update(
-            (_) => const ThemeProps(primaryColor: 0xFF123456),
-          );
-      expect(
-        container.read(themeSettingProvider).primaryColor,
-        0xFF123456,
-      );
+      container
+          .read(themeSettingProvider.notifier)
+          .update((_) => const ThemeProps(primaryColor: 0xFF123456));
+      expect(container.read(themeSettingProvider).primaryColor, 0xFF123456);
     });
   });
 
@@ -138,7 +135,9 @@ void main() {
     });
 
     test('can update state', () {
-      container.read(proxiesStyleSettingProvider.notifier).update(
+      container
+          .read(proxiesStyleSettingProvider.notifier)
+          .update(
             (_) => const ProxiesStyleProps(sortType: ProxiesSortType.delay),
           );
       expect(
@@ -168,6 +167,28 @@ void main() {
       expect(config.currentProfileId, 99);
       expect(config.overrideDns, true);
     });
+
+    test('applies current host vpn and network normalization', () {
+      const vpnInput = VpnProps(
+        systemProxy: false,
+        allowBypass: false,
+        accessControlProps: AccessControlProps(
+          enable: true,
+          mode: AccessControlMode.acceptSelected,
+          acceptList: ['com.example.app'],
+        ),
+      );
+      const networkInput = NetworkProps(
+        systemProxy: false,
+        bypassDomain: ['example.com'],
+      );
+      container.read(vpnSettingProvider.notifier).update((_) => vpnInput);
+      container.read(networkSettingProvider.notifier).update((_) => networkInput);
+      final config = container.read(configProvider);
+
+      expect(config.vpnProps, normalizeOhosVpnProps(vpnInput));
+      expect(config.networkProps, normalizeOhosNetworkProps(networkInput));
+    });
   });
 
   group('buildConfigOverrides', () {
@@ -189,6 +210,36 @@ void main() {
         overrideContainer.read(appSettingProvider).onlyStatisticsProxy,
         false,
       );
+    });
+
+    test('applies current host vpn and network override normalization', () {
+      const config = Config(
+        themeProps: ThemeProps(),
+        vpnProps: VpnProps(
+          systemProxy: false,
+          allowBypass: false,
+          accessControlProps: AccessControlProps(
+            enable: true,
+            mode: AccessControlMode.acceptSelected,
+            acceptList: ['com.example.app'],
+          ),
+        ),
+        networkProps: NetworkProps(
+          systemProxy: false,
+          bypassDomain: ['example.com'],
+        ),
+      );
+
+      final overrideContainer = ProviderContainer(
+        overrides: buildConfigOverrides(config),
+      );
+      addTearDown(overrideContainer.dispose);
+
+      final vpnProps = overrideContainer.read(vpnSettingProvider);
+      final networkProps = overrideContainer.read(networkSettingProvider);
+
+      expect(vpnProps, normalizeOhosVpnProps(config.vpnProps));
+      expect(networkProps, normalizeOhosNetworkProps(config.networkProps));
     });
   });
 }

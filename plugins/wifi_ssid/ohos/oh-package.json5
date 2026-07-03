@@ -1,0 +1,11 @@
+{
+  "name": "wifi_ssid",
+  "version": "1.0.0",
+  "description": "FlClash Wi-Fi SSID plugin for OpenHarmony.",
+  "main": "index.ets",
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@ohos/flutter_ohos": "file:har/flutter.har"
+  }
+}

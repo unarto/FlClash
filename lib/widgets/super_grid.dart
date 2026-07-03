@@ -36,6 +36,9 @@ class SuperGridState extends State<SuperGrid> with TickerProviderStateMixin {
   final ValueNotifier<List<GridItem>> _childrenNotifier = ValueNotifier([]);
   List<GridItem> children = [];
 
+  List<GridItem> get currentChildren =>
+      List.unmodifiable(_childrenNotifier.value);
+
   int get length => _childrenNotifier.value.length;
   List<int> _tempIndexList = [];
   List<BuildContext?> _itemContexts = [];
@@ -72,6 +75,12 @@ class SuperGridState extends State<SuperGrid> with TickerProviderStateMixin {
   Scrollable? _scrollable;
 
   int get crossCount => widget.crossAxisCount;
+
+  void _debugDrag(String message) {
+    if (system.isOhos) {
+      commonPrint.log('[dashboard-drag] $message');
+    }
+  }
 
   void _onChildrenChange() {
     _tempIndexList = List.generate(length, (index) => index);
@@ -256,9 +265,13 @@ class SuperGridState extends State<SuperGrid> with TickerProviderStateMixin {
       _sizes[index].width,
       _sizes[index].height,
     );
+    _debugDrag('start index=$index targetIndex=$_targetIndex rect=$_dragRect');
   }
 
   Future<void> _handleDragEnd(DraggableDetails details) async {
+    _debugDrag(
+      'end dragIndex=${_dragIndexNotifier.value} targetIndex=$_targetIndex offset=${details.offset}',
+    );
     final children = List<GridItem>.from(_childrenNotifier.value);
     children.insert(_targetIndex, children.removeAt(_dragIndexNotifier.value));
     this.children = children;
@@ -288,6 +301,7 @@ class SuperGridState extends State<SuperGrid> with TickerProviderStateMixin {
 
   void _handleDragUpdate(DragUpdateDetails details) {
     _dragRect = _dragRect.translate(0, details.delta.dy);
+    _debugDrag('update delta=${details.delta} rect=$_dragRect');
     _edgeDraggingAutoScroller?.startAutoScrollIfNecessary(_dragRect);
   }
 
@@ -313,6 +327,9 @@ class SuperGridState extends State<SuperGrid> with TickerProviderStateMixin {
     }).toList();
 
     _targetIndex = targetIndex;
+    _debugDrag(
+      'will index=$index targetIndex=$_targetIndex dragIndex=$dragIndex',
+    );
 
     await _transform();
   }
@@ -324,6 +341,8 @@ class SuperGridState extends State<SuperGrid> with TickerProviderStateMixin {
     await _transform();
     final children = List<GridItem>.from(_childrenNotifier.value);
     children.removeAt(index);
+    this.children = children;
+    _debugDrag('delete index=$index length=${children.length}');
     _childrenNotifier.value = children;
     _initState();
   }
@@ -428,9 +447,12 @@ class SuperGridState extends State<SuperGrid> with TickerProviderStateMixin {
     required Widget item,
     required int index,
   }) {
+    final dragChild = system.isOhos
+        ? ActivateBox(active: true, child: item)
+        : item;
     final target = DragTarget<int>(
       builder: (_, _, _) {
-        return AbsorbPointer(child: item);
+        return AbsorbPointer(child: dragChild);
       },
       onWillAcceptWithDetails: (_) {
         debouncer.call(
@@ -485,21 +507,38 @@ class SuperGridState extends State<SuperGrid> with TickerProviderStateMixin {
             },
             child: shakeTarget,
           )
-        : LongPressDraggable(
-            childWhenDragging: childWhenDragging,
-            data: index,
-            feedback: feedback,
-            onDragStarted: () {
-              _handleDragStarted(index);
-            },
-            onDragUpdate: (details) {
-              _handleDragUpdate(details);
-            },
-            onDragEnd: (details) {
-              _handleDragEnd(details);
-            },
-            child: shakeTarget,
-          );
+        : (system.isOhos
+              ? Draggable(
+                  childWhenDragging: childWhenDragging,
+                  data: index,
+                  feedback: feedback,
+                  onDragStarted: () {
+                    _handleDragStarted(index);
+                  },
+                  onDragUpdate: (details) {
+                    _handleDragUpdate(details);
+                  },
+                  onDragEnd: (details) {
+                    _handleDragEnd(details);
+                  },
+                  child: shakeTarget,
+                )
+              : LongPressDraggable(
+                  childWhenDragging: childWhenDragging,
+                  data: index,
+                  feedback: feedback,
+                  allowedButtonsFilter: system.isOhos ? (_) => true : null,
+                  onDragStarted: () {
+                    _handleDragStarted(index);
+                  },
+                  onDragUpdate: (details) {
+                    _handleDragUpdate(details);
+                  },
+                  onDragEnd: (details) {
+                    _handleDragEnd(details);
+                  },
+                  child: shakeTarget,
+                ));
     return draggableChild;
   }
 

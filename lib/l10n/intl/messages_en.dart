@@ -206,8 +206,11 @@ class MessageLookup extends MessageLookupByLibrary {
       "Cancel select all",
     ),
     "checkUpdate": MessageLookupByLibrary.simpleMessage("Check for updates"),
-    "checkUpdateError": MessageLookupByLibrary.simpleMessage(
+    "checkUpdateLatest": MessageLookupByLibrary.simpleMessage(
       "The current application is already the latest version",
+    ),
+    "checkUpdateError": MessageLookupByLibrary.simpleMessage(
+      "Failed to check for updates. Please try again later.",
     ),
     "clearData": MessageLookupByLibrary.simpleMessage("Clear Data"),
     "clipboardExport": MessageLookupByLibrary.simpleMessage("Export clipboard"),

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/common/observable"
@@ -23,9 +24,11 @@ import (
 	"golang.org/x/exp/slices"
 	"net"
 	"os"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -41,10 +44,12 @@ func handleInitClash(paramsString string) bool {
 	var params = InitParams{}
 	err := json.Unmarshal([]byte(paramsString), &params)
 	if err != nil {
+		debugCoreLog("handleInitClash unmarshal failed err=%v payload=%s", err, paramsString)
 		return false
 	}
 	version = params.Version
 	constant.SetHomeDir(params.HomeDir)
+	debugCoreLog("handleInitClash homeDir=%s version=%d", params.HomeDir, params.Version)
 	isInit = true
 	return isInit
 }
@@ -88,10 +93,64 @@ func handleShutdown() bool {
 }
 
 func handleValidateConfig(path string) string {
-	buf, err := readFile(path)
-	_, err = config.UnmarshalRawConfig(buf)
+	_, err := executor.ParseWithPath(path)
 	if err != nil {
-		return err.Error()
+		message := err.Error()
+		matches := regexp.MustCompile(`(proxy|listener)\s+(\d+):`).FindStringSubmatch(message)
+		if len(matches) == 3 {
+			kind := matches[1]
+			if index, convErr := strconv.Atoi(matches[2]); convErr == nil {
+				if buf, readErr := os.ReadFile(path); readErr == nil {
+					if rawCfg, unmarshalErr := config.UnmarshalRawConfig(buf); unmarshalErr == nil {
+						if kind == "proxy" && index >= 0 && index < len(rawCfg.Proxy) {
+							mapping := rawCfg.Proxy[index]
+							name, _ := mapping["name"].(string)
+							proxyType, _ := mapping["type"].(string)
+							plugin, _ := mapping["plugin"].(string)
+							pluginOptKeys := []string{}
+							mappingJSON := ""
+							if pluginOpts, ok := mapping["plugin-opts"].(map[string]any); ok {
+								for key := range pluginOpts {
+									pluginOptKeys = append(pluginOptKeys, key)
+								}
+								slices.Sort(pluginOptKeys)
+							}
+							if encoded, marshalErr := json.Marshal(mapping); marshalErr == nil {
+								mappingJSON = string(encoded)
+							}
+							return fmt.Sprintf(
+								"proxy %d (%s type=%s plugin=%s plugin-opts=%v mapping=%s): %s",
+								index,
+								name,
+								proxyType,
+								plugin,
+								pluginOptKeys,
+								mappingJSON,
+								message,
+							)
+						}
+						if kind == "listener" && index >= 0 && index < len(rawCfg.Listeners) {
+							mapping := rawCfg.Listeners[index]
+							name, _ := mapping["name"].(string)
+							listenerType, _ := mapping["type"].(string)
+							mappingJSON := ""
+							if encoded, marshalErr := json.Marshal(mapping); marshalErr == nil {
+								mappingJSON = string(encoded)
+							}
+							return fmt.Sprintf(
+								"listener %d (%s type=%s mapping=%s): %s",
+								index,
+								name,
+								listenerType,
+								mappingJSON,
+								message,
+							)
+						}
+					}
+				}
+			}
+		}
+		return message
 	}
 	return ""
 }
@@ -264,6 +323,13 @@ func handleGetConnections() string {
 	runLock.Lock()
 	defer runLock.Unlock()
 	snapshot := statistic.DefaultManager.Snapshot()
+	log.Infoln(
+		"[APP] getConnections snapshot connections=%d uploadTotal=%d downloadTotal=%d memory=%d",
+		len(snapshot.Connections),
+		snapshot.UploadTotal,
+		snapshot.DownloadTotal,
+		snapshot.Memory,
+	)
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		logError("Error: %s", err)
@@ -424,15 +490,31 @@ func handleSuspend(suspended bool) bool {
 }
 
 func handleStartLog() {
+	debugCoreLog("handleStartLog begin subscriberNil=%t", logSubscriber == nil)
 	if logSubscriber != nil {
 		log.UnSubscribe(logSubscriber)
 		logSubscriber = nil
+		debugCoreLog("handleStartLog unsubscribed previous subscriber")
 	}
 	logSubscriber = log.Subscribe()
+	debugCoreLog("handleStartLog subscribed subscriberNil=%t", logSubscriber == nil)
 	go func() {
 		for logData := range logSubscriber {
 			if logData.LogLevel < log.Level() {
+				debugCoreLog(
+					"handleStartLog skip level=%s current=%s payload=%s",
+					logData.LogLevel.String(),
+					log.Level().String(),
+					logData.Payload,
+				)
 				continue
+			}
+			if logData.Payload != "" {
+				debugCoreLog(
+					"handleStartLog dispatch level=%s payload=%s",
+					logData.LogLevel.String(),
+					logData.Payload,
+				)
 			}
 			message := &Message{
 				Type: LogMessage,
@@ -440,6 +522,7 @@ func handleStartLog() {
 			}
 			sendMessage(*message)
 		}
+		debugCoreLog("handleStartLog subscriber loop exit")
 	}()
 }
 
@@ -478,6 +561,33 @@ func handleGetConfig(path string) (*config.RawConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	rulesHead := ""
+	huaweiRules := ""
+	if len(prof.Rule) > 0 {
+		head := prof.Rule
+		if len(head) > 12 {
+			head = head[:12]
+		}
+		rulesHead = strings.Join(head, " || ")
+		var matches []string
+		for _, rule := range prof.Rule {
+			if strings.Contains(rule, "httpdns.platform.dbankcloud.com") ||
+				strings.Contains(rule, "httpdns-browser.platform.dbankcloud.cn") ||
+				strings.Contains(rule, "browsercfg-drcn.cloud.dbankcloud.cn") {
+				matches = append(matches, rule)
+				if len(matches) >= 12 {
+					break
+				}
+			}
+		}
+		huaweiRules = strings.Join(matches, " || ")
+	}
+	debugCoreLog(
+		"handleGetConfig path=%s rulesHead=%s huaweiRules=%s",
+		path,
+		rulesHead,
+		huaweiRules,
+	)
 	return prof, nil
 }
 
@@ -557,6 +667,21 @@ func init() {
 		})
 	}
 	statistic.DefaultRequestNotify = func(c statistic.Tracker) {
+		info := c.Info()
+		if info != nil && info.Metadata != nil {
+			log.Infoln(
+				"[APP] request notify id=%s network=%s host=%s dst=%s:%d chains=%v rule=%s",
+				c.ID(),
+				info.Metadata.NetWork.String(),
+				info.Metadata.Host,
+				info.Metadata.DstIP.String(),
+				info.Metadata.DstPort,
+				info.Chain,
+				info.Rule,
+			)
+		} else {
+			log.Infoln("[APP] request notify id=%s metadata=nil", c.ID())
+		}
 		sendMessage(Message{
 			Type: RequestMessage,
 			Data: c,

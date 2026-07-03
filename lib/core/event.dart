@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:fl_clash/enum/enum.dart';
+import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:flutter/foundation.dart';
 
@@ -24,13 +25,32 @@ class CoreEventManager {
       for (final CoreEventListener listener in _listeners) {
         switch (event.type) {
           case CoreEventType.log:
-            listener.onLog(Log.fromJson(event.data));
+            final log = Log.fromJson(event.data);
+            final payload = log.payload;
+            if (payload.contains('[DNS]') ||
+                payload.contains('[TUN]') ||
+                payload.contains('[sing-tun]') ||
+                payload.contains('DNS server')) {
+              commonPrint.log('[OHOS-CORE-LOG] ${log.payload}');
+            }
+            listener.onLog(log);
             break;
           case CoreEventType.delay:
             listener.onDelay(Delay.fromJson(event.data));
             break;
           case CoreEventType.request:
-            listener.onRequest(TrackerInfo.fromJson(event.data));
+            try {
+              final trackerInfo = TrackerInfo.fromJson(event.data);
+              commonPrint.log(
+                '[OHOS-CORE] dispatch request event id=${trackerInfo.id} host=${trackerInfo.metadata.host} chains=${trackerInfo.chains.join(" -> ")}',
+              );
+              listener.onRequest(trackerInfo);
+            } catch (e) {
+              commonPrint.log(
+                '[OHOS-CORE] request event parse failed error=$e payload=${event.data}',
+                logLevel: LogLevel.error,
+              );
+            }
             break;
           case CoreEventType.loaded:
             listener.onLoaded(event.data);

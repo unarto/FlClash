@@ -89,7 +89,7 @@ abstract class Metadata with _$Metadata {
   }) = _Metadata;
 
   factory Metadata.fromJson(Map<String, Object?> json) =>
-      _$MetadataFromJson(json);
+      _metadataFromJson(json);
 }
 
 @freezed
@@ -108,7 +108,7 @@ abstract class TrackerInfo with _$TrackerInfo {
   }) = _TrackerInfo;
 
   factory TrackerInfo.fromJson(Map<String, Object?> json) =>
-      _$TrackerInfoFromJson(json);
+      _trackerInfoFromJson(json);
 }
 
 extension TrackerInfoExt on TrackerInfo {
@@ -135,6 +135,89 @@ extension TrackerInfoExt on TrackerInfo {
 
 String _logDateTime(dynamic _) {
   return DateTime.now().showFull;
+}
+
+String _jsonString(dynamic value, {String fallback = ''}) {
+  if (value == null) {
+    return fallback;
+  }
+  return value.toString();
+}
+
+int _jsonInt(dynamic value, {int fallback = 0}) {
+  if (value == null) {
+    return fallback;
+  }
+  if (value is int) {
+    return value;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  return int.tryParse(value.toString()) ?? fallback;
+}
+
+DateTime _jsonDateTime(dynamic value) {
+  if (value is DateTime) {
+    return value;
+  }
+  if (value is String && value.isNotEmpty) {
+    return DateTime.tryParse(value) ?? DateTime.fromMillisecondsSinceEpoch(0);
+  }
+  return DateTime.fromMillisecondsSinceEpoch(0);
+}
+
+List<String> _jsonStringList(dynamic value) {
+  if (value is List) {
+    return value.map((item) => item.toString()).toList();
+  }
+  return const [];
+}
+
+Metadata _metadataFromJson(Map<String, Object?> json) {
+  return Metadata(
+    uid: _jsonInt(json['uid']),
+    network: _jsonString(json['network']),
+    sourceIP: _jsonString(json['sourceIP']),
+    sourcePort: _jsonString(json['sourcePort']),
+    destinationIP: _jsonString(json['destinationIP']),
+    destinationPort: _jsonString(json['destinationPort']),
+    host: _jsonString(json['host']),
+    dnsMode:
+        json['dnsMode'] == null
+            ? null
+            : DnsMode.values.firstWhereOrNull(
+              (item) => item.name == json['dnsMode'],
+            ),
+    process: _jsonString(json['process']),
+    processPath: _jsonString(json['processPath']),
+    remoteDestination: _jsonString(json['remoteDestination']),
+    sourceGeoIP: _jsonStringList(json['sourceGeoIP']),
+    destinationGeoIP: _jsonStringList(json['destinationGeoIP']),
+    destinationIPASN: _jsonString(json['destinationIPASN']),
+    sourceIPASN: _jsonString(json['sourceIPASN']),
+    specialRules: _jsonString(json['specialRules']),
+    specialProxy: _jsonString(json['specialProxy']),
+  );
+}
+
+TrackerInfo _trackerInfoFromJson(Map<String, Object?> json) {
+  return TrackerInfo(
+    id: _jsonString(json['id']),
+    upload: _jsonInt(json['upload']),
+    download: _jsonInt(json['download']),
+    start: _jsonDateTime(json['start']),
+    metadata: _metadataFromJson(
+      (json['metadata'] as Map?)?.cast<String, Object?>() ?? const {},
+    ),
+    chains: _jsonStringList(json['chains']),
+    rule: _jsonString(json['rule']),
+    rulePayload: _jsonString(json['rulePayload']),
+    downloadSpeed:
+        json['downloadSpeed'] == null ? null : _jsonInt(json['downloadSpeed']),
+    uploadSpeed:
+        json['uploadSpeed'] == null ? null : _jsonInt(json['uploadSpeed']),
+  );
 }
 
 // String _logId(_) {
@@ -549,7 +632,7 @@ extension ScriptExt on Script {
     if (!await file.exists()) {
       await file.create(recursive: true);
     }
-    await File(copyPath).copy(copyPath);
+    await File(copyPath).copy(file.path);
     return copyWith(lastUpdateTime: DateTime.now());
   }
 }

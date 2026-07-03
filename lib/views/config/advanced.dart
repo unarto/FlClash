@@ -32,12 +32,17 @@ class AdvancedConfigView extends StatelessWidget {
           ),
         ),
       ),
-      ListItem.open(
-        title: Text(appLocalizations.onDemand),
-        subtitle: Text(appLocalizations.onDemandDesc),
-        leading: const Icon(Icons.ssid_chart, fontWeight: FontWeight.w900),
-        delegate: const OpenDelegate(widget: OnDemandView(), blur: false),
-      ),
+      // On-demand triggering relies on Wi-Fi SSID detection (wifi_ssid), which is
+      // not available on OHOS (the plugin is har-only and unregistered; SSID is
+      // always null there). Hiding the entry avoids a MissingPluginException when
+      // the permission flow is triggered.
+      if (!system.isOhos)
+        ListItem.open(
+          title: Text(appLocalizations.onDemand),
+          subtitle: Text(appLocalizations.onDemandDesc),
+          leading: const Icon(Icons.ssid_chart, fontWeight: FontWeight.w900),
+          delegate: const OpenDelegate(widget: OnDemandView(), blur: false),
+        ),
       ListItem.open(
         title: const Text('DNS'),
         subtitle: Text(appLocalizations.dnsDesc),

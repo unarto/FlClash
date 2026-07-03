@@ -1,6 +1,7 @@
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
+import 'package:fl_clash/plugins/app.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/views/profiles/overwrite/overwrite.dart';
@@ -153,6 +154,9 @@ class _ProfilesViewState extends State<ProfilesView> {
                               profile: state.profiles[i],
                               groupValue: state.currentProfileId,
                               onChanged: (profileId) {
+                                commonPrint.log(
+                                  '[profile-select-ui] onChanged profileId=$profileId current=${state.currentProfileId}',
+                                );
                                 ref
                                         .read(currentProfileIdProvider.notifier)
                                         .value =
@@ -204,6 +208,9 @@ class ProfileItem extends StatelessWidget {
 
   Future updateProfile() async {
     if (profile.type == ProfileType.file) return;
+    commonPrint.log(
+      '[profile-sync-ui] trigger id=${profile.id} label=${profile.realLabel}',
+    );
     await globalState.loadingRun(() async {
       await globalState.container
           .read(profilesActionProvider.notifier)
@@ -247,9 +254,25 @@ class ProfileItem extends StatelessWidget {
   }
 
   Future<void> _handleCopyLink(BuildContext context) async {
-    await Clipboard.setData(ClipboardData(text: profile.url));
-    if (context.mounted) {
+    bool success = false;
+    if (system.isOhos) {
+      final value = await app?.setClipboardText(profile.url);
+      success = value == true;
+      commonPrint.log(
+        '[profile-copy-link] ohos setClipboardText '
+        'success=$success hasApp=${app != null} '
+        'urlLength=${profile.url.length}',
+      );
+    } else {
+      await Clipboard.setData(ClipboardData(text: profile.url));
+      success = true;
+    }
+    if (success && context.mounted) {
       context.showNotifier(context.appLocalizations.copySuccess);
+      return;
+    }
+    if (context.mounted) {
+      context.showNotifier('Copy failed');
     }
   }
 
@@ -261,8 +284,7 @@ class ProfileItem extends StatelessWidget {
         profile.realLabel,
         mFile.readAsBytesSync(),
       );
-      if (value == null) return false;
-      return true;
+      return value != null;
     }, title: appLocalizations.tip);
     if (res == true && context.mounted) {
       context.showNotifier(appLocalizations.exportSuccess);
@@ -323,6 +345,9 @@ class ProfileItem extends StatelessWidget {
                                 icon: Icons.sync_alt_sharp,
                                 label: appLocalizations.sync,
                                 onPressed: () {
+                                  commonPrint.log(
+                                    '[profile-sync-menu] pressed id=${profile.id} label=${profile.realLabel}',
+                                  );
                                   updateProfile();
                                 },
                               ),

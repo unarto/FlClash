@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "proxy",
+    "type": "har",
+    "deviceTypes": [
+      "default",
+      "tablet"
+    ]
+  }
+}
